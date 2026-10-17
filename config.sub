@@ -883,6 +883,10 @@ case $basic_machine in
 		cpu=power
 		vendor=ibm
 		;;
+	xenon)
+		cpu=powerpc64
+		basic_os=linux
+		;;
 	ps2)
 		cpu=i386
 		vendor=ibm
