@@ -99,6 +99,11 @@
   "@internal Like @code{b}, if @option{-mpowerpc64} is used; otherwise,
    @code{NO_REGS}.")
 
+(define_register_constraint "wV" "rs6000_constraints[RS6000_CONSTRAINT_wV]"
+  "Any VMX128 vector register (v0-v127), if VMX128 is enabled (AltiVec and
+  @option{-mcpu=cell}).  The register allocator only picks v0-v31 for pseudos;
+  v32-v127 are reached only through explicit register variables.")
+
 (define_register_constraint "wD" "rs6000_constraints[RS6000_CONSTRAINT_wD]"
   "@internal Floating point register @code{FPR} if TARGET_MMA is enabled.
   1024 bit Dense math register @code{DMR} if TARGET_DMF is enabled.")

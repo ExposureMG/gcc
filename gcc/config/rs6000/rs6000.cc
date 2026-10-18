@@ -1231,6 +1231,19 @@ char rs6000_reg_names[][8] =
       "vrsave", "vscr", "sfp",
   /* DMRs */
       "0", "1", "2", "3", "4", "5", "6", "7",
+  /* VMX128 v32-v127 */
+     "32", "33", "34", "35", "36", "37", "38", "39",
+     "40", "41", "42", "43", "44", "45", "46", "47",
+     "48", "49", "50", "51", "52", "53", "54", "55",
+     "56", "57", "58", "59", "60", "61", "62", "63",
+     "64", "65", "66", "67", "68", "69", "70", "71",
+     "72", "73", "74", "75", "76", "77", "78", "79",
+     "80", "81", "82", "83", "84", "85", "86", "87",
+     "88", "89", "90", "91", "92", "93", "94", "95",
+     "96", "97", "98", "99", "100", "101", "102", "103",
+     "104", "105", "106", "107", "108", "109", "110", "111",
+     "112", "113", "114", "115", "116", "117", "118", "119",
+     "120", "121", "122", "123", "124", "125", "126", "127",
 };
 
 #ifdef TARGET_REGNAMES
@@ -1259,6 +1272,19 @@ static const char alt_reg_names[][8] =
   "vrsave", "vscr", "sfp",
   /* DMRs */
   "%dm0", "%dm1", "%dm2", "%dm3", "%dm4", "%dm5", "%dm6", "%dm7",
+  /* VMX128 v32-v127 */
+     "%v32", "%v33", "%v34", "%v35", "%v36", "%v37", "%v38", "%v39",
+     "%v40", "%v41", "%v42", "%v43", "%v44", "%v45", "%v46", "%v47",
+     "%v48", "%v49", "%v50", "%v51", "%v52", "%v53", "%v54", "%v55",
+     "%v56", "%v57", "%v58", "%v59", "%v60", "%v61", "%v62", "%v63",
+     "%v64", "%v65", "%v66", "%v67", "%v68", "%v69", "%v70", "%v71",
+     "%v72", "%v73", "%v74", "%v75", "%v76", "%v77", "%v78", "%v79",
+     "%v80", "%v81", "%v82", "%v83", "%v84", "%v85", "%v86", "%v87",
+     "%v88", "%v89", "%v90", "%v91", "%v92", "%v93", "%v94", "%v95",
+     "%v96", "%v97", "%v98", "%v99", "%v100", "%v101", "%v102", "%v103",
+     "%v104", "%v105", "%v106", "%v107", "%v108", "%v109", "%v110", "%v111",
+     "%v112", "%v113", "%v114", "%v115", "%v116", "%v117", "%v118", "%v119",
+     "%v120", "%v121", "%v122", "%v123", "%v124", "%v125", "%v126", "%v127",
 };
 #endif
 
@@ -1673,6 +1699,9 @@ static const scoped_attribute_specs *const rs6000_attribute_table[] =
 #undef TARGET_SET_CURRENT_FUNCTION
 #define TARGET_SET_CURRENT_FUNCTION rs6000_set_current_function
 
+#undef TARGET_EXPAND_TO_RTL_HOOK
+#define TARGET_EXPAND_TO_RTL_HOOK rs6000_expand_to_rtl_hook
+
 #undef TARGET_LEGITIMATE_CONSTANT_P
 #define TARGET_LEGITIMATE_CONSTANT_P rs6000_legitimate_constant_p
 
@@ -1846,7 +1875,7 @@ rs6000_hard_regno_nregs_internal (int regno, machine_mode mode)
 		? UNITS_PER_VSX_WORD
 		: UNITS_PER_FP_WORD);
 
-  else if (ALTIVEC_REGNO_P (regno))
+  else if (ALTIVEC_REGNO_P (regno) || VMX128_HI_REGNO_P (regno))
     reg_size = UNITS_PER_ALTIVEC_WORD;
 
   else if (DMR_REGNO_P (regno))
@@ -1867,6 +1896,14 @@ rs6000_hard_regno_mode_ok_uncached (int regno, machine_mode mode)
 
   if (COMPLEX_MODE_P (mode))
     mode = GET_MODE_INNER (mode);
+
+  /* The Xenon VMX128 registers v32-v127 hold one 16-byte AltiVec vector,
+     and nothing at all unless VMX128 is enabled.  */
+  if (VMX128_HI_REGNO_P (regno))
+    return (TARGET_VMX128
+	    && VECTOR_MEM_ALTIVEC_OR_VSX_P (mode)
+	    && GET_MODE_SIZE (mode) == 16
+	    && last_regno == regno);
 
   /* No other types other than XOmode or TDOmode can go in DMRs.  */
   if (DMR_REGNO_P (regno) && !(mode ==XOmode || mode == TDOmode))
@@ -2831,6 +2868,9 @@ rs6000_init_hard_regno_mode_ok (bool global_init_p)
   for (r = FIRST_DMR_REGNO; r <= LAST_DMR_REGNO; ++r)
     rs6000_regno_regclass[r] = DMR_REGS;
 
+  for (r = FIRST_VMX128_REGNO; r <= LAST_VMX128_REGNO; ++r)
+    rs6000_regno_regclass[r] = VMX128_HI_REGS;
+
   rs6000_regno_regclass[CR0_REGNO] = CR0_REGS;
   for (r = CR1_REGNO; r <= CR7_REGNO; ++r)
     rs6000_regno_regclass[r] = CR_REGS;
@@ -2860,6 +2900,8 @@ rs6000_init_hard_regno_mode_ok (bool global_init_p)
   reg_class_to_reg_type[(int)CR_REGS] = CR_REG_TYPE;
   reg_class_to_reg_type[(int)CR0_REGS] = CR_REG_TYPE;
   reg_class_to_reg_type[(int)DMR_REGS] = DMR_REG_TYPE;
+  reg_class_to_reg_type[(int)VMX128_HI_REGS] = ALTIVEC_REG_TYPE;
+  reg_class_to_reg_type[(int)VMX128_REGS] = ALTIVEC_REG_TYPE;
 
   if (TARGET_VSX)
     {
@@ -3031,6 +3073,8 @@ rs6000_init_hard_regno_mode_ok (bool global_init_p)
     rs6000_constraints[RS6000_CONSTRAINT_d] = FLOAT_REGS;
   if (TARGET_ALTIVEC)
     rs6000_constraints[RS6000_CONSTRAINT_v] = ALTIVEC_REGS;
+  if (TARGET_VMX128)
+    rs6000_constraints[RS6000_CONSTRAINT_wV] = VMX128_REGS;
   if (TARGET_VSX)
     rs6000_constraints[RS6000_CONSTRAINT_wa] = VSX_REGS;
   if (TARGET_DMF)
@@ -3245,7 +3289,7 @@ rs6000_init_hard_regno_mode_ok (bool global_init_p)
       if (TARGET_VSX && VSX_REG_CLASS_P (c))
 	reg_size = UNITS_PER_VSX_WORD;
 
-      else if (c == ALTIVEC_REGS)
+      else if (c == ALTIVEC_REGS || c == VMX128_HI_REGS || c == VMX128_REGS)
 	reg_size = UNITS_PER_ALTIVEC_WORD;
 
       else if (c == FLOAT_REGS)
@@ -24375,6 +24419,20 @@ rs6000_init_dwarf_reg_sizes_extra (tree address)
 unsigned int
 rs6000_debugger_regno (unsigned int regno, unsigned int format)
 {
+  /* The Xenon VMX128 registers v32-v127 are numbered 1124 + N (v32 = 1156,
+     v127 = 1251) in every format.  On targets that use
+     RS6000_USE_DWARF_NUMBERING, v0-v31 are 1124-1155 and this simply
+     continues that block.  On other targets (such as Linux, used for Xenon)
+     v0-v31 are emitted in the GCC 7 numbering (77-108), which has no room
+     for 96 more registers because 109-119 are already taken by VRSAVE, VSCR,
+     the soft frame pointer and the DMRs, so v32 and up use the standard ABI
+     style numbers in all formats.  1200-1231 (v76-v107) overlap the numbers
+     the 32-bit SysV ABI supplement gives the SPE registers rh0-rh31; that is
+     harmless because Xenon has no SPE.  These registers are never saved, so
+     they never appear in call frame information.  */
+  if (VMX128_HI_REGNO_P (regno))
+    return 1124 + 32 + (regno - FIRST_VMX128_REGNO);
+
   /* On some platforms, we use the standard DWARF register
      numbering for .debug_info and .debug_frame.  */
   if ((format == 0 && dwarf_debuginfo_p ()) || format == 1)
@@ -25264,6 +25322,68 @@ rs6000_set_current_function (tree fndecl)
 
   if (fndecl)
     rs6000_previous_fndecl = fndecl;
+}
+
+/* Helper for rs6000_expand_to_rtl_hook, called through walk_gimple_op.
+   Return *TP if it is a global register variable in one of the Xenon
+   VMX128 registers v32-v127.  */
+
+static tree
+rs6000_find_vmx128_global_reg (tree *tp, int *walk_subtrees, void *)
+{
+  tree t = *tp;
+
+  if (VAR_P (t)
+      && DECL_HARD_REGISTER (t)
+      && is_global_var (t)
+      && DECL_RTL_SET_P (t)
+      && REG_P (DECL_RTL (t))
+      && VMX128_HI_REGNO_P (REGNO (DECL_RTL (t))))
+    return t;
+
+  if (IS_TYPE_OR_DECL_P (t))
+    *walk_subtrees = 0;
+
+  return NULL_TREE;
+}
+
+/* Implement TARGET_EXPAND_TO_RTL_HOOK.  A global register variable in
+   v32-v127 can only be declared where TARGET_VMX128 is true, but it can
+   still be used in a function compiled without it, for example one with
+   __attribute__ ((target ("cpu=power7"))).  Those registers cannot hold
+   any mode there and the VMX128 move pattern is disabled, so diagnose such
+   a use here rather than let the register allocator fail on it.  */
+
+static void
+rs6000_expand_to_rtl_hook (void)
+{
+  if (TARGET_VMX128)
+    return;
+
+  int regno;
+  for (regno = FIRST_VMX128_REGNO; regno <= LAST_VMX128_REGNO; regno++)
+    if (global_regs[regno])
+      break;
+  if (regno > LAST_VMX128_REGNO)
+    return;
+
+  basic_block bb;
+  FOR_EACH_BB_FN (bb, cfun)
+    for (gimple_stmt_iterator gsi = gsi_start_bb (bb); !gsi_end_p (gsi);
+	 gsi_next (&gsi))
+      {
+	gimple *stmt = gsi_stmt (gsi);
+	struct walk_stmt_info wi;
+	memset (&wi, 0, sizeof (wi));
+	tree var = walk_gimple_op (stmt, rs6000_find_vmx128_global_reg, &wi);
+	if (var)
+	  {
+	    error_at (gimple_location (stmt),
+		      "global register variable %qD is in a VMX128 register, "
+		      "which requires %<-mcpu=cell%> with AltiVec", var);
+	    return;
+	  }
+      }
 }
 
 

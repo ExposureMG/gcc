@@ -116,7 +116,7 @@
   mcpu=powerpc: -mppc; \
   mcpu=powerpc64: -mppc64; \
   mcpu=a2: -ma2; \
-  mcpu=cell: -mcell; \
+  mcpu=cell: -mcell -mvmx128; \
   mcpu=rs64: -mppc64; \
   mcpu=401: -mppc; \
   mcpu=403: -m403; \
@@ -773,7 +773,26 @@ enum data_align { align_abi, align_opt, align_both };
    Another pseudo (not included in DWARF_FRAME_REGISTERS) is soft frame
    pointer, which is eventually eliminated in favor of SP or FP.  */
 
-#define FIRST_PSEUDO_REGISTER 119
+#define FIRST_PSEUDO_REGISTER 215
+
+/* The Xbox 360 "Xenon" VMX128 extension has 128 vector registers.  Registers
+   v32..v127 are hard registers 119..214.  They are fixed: the register
+   allocator never uses them.  They are reachable through explicit register
+   variables, inline asm and the "wV" constraint, but only if TARGET_VMX128
+   is true; otherwise they cannot hold any mode and "wV" is NO_REGS.
+
+   In this port v32..v127 are both fixed and call-clobbered
+   (CALL_REALLY_USED_REGISTERS is 1 for all of them).  GCC never saves or
+   restores them, not even when an inline asm clobbers them.  This differs
+   from the Xbox 360 XDK convention, where v64..v127 are non-volatile and
+   v32..v63 are volatile.  Code that is called from XDK-compiled code and
+   clobbers any of v64..v127 must save and restore them itself.  */
+
+/* The VMX128 registers are never saved and their debugger numbers are
+   1156 and up, so they never appear in unwind information.  Keep libgcc's
+   unwinder tables (_Unwind_Context, _Unwind_FrameState) the same size as
+   upstream by leaving them out of DWARF_FRAME_REGISTERS (119).  */
+#define DWARF_FRAME_REGISTERS FIRST_VMX128_REGNO
 
 /* Use standard DWARF numbering for DWARF debugging information.  */
 #define DEBUGGER_REGNO(REGNO) rs6000_debugger_regno ((REGNO), 0)
@@ -812,7 +831,14 @@ enum data_align { align_abi, align_opt, align_both };
    /* vrsave vscr sfp */			   \
    1, 1, 1,					   \
    /* DMRs */					   \
-   0, 0, 0, 0, 0, 0, 0, 0			   \
+   0, 0, 0, 0, 0, 0, 0, 0,			   \
+   /* VMX128 v32-v127 */			   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,							   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,							   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,							   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,							   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,							   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1			   \
 }
 
 /* Like `CALL_USED_REGISTERS' except this macro doesn't require that
@@ -838,7 +864,14 @@ enum data_align { align_abi, align_opt, align_both };
    /* vrsave vscr sfp */			   \
    0, 0, 0,					   \
    /* DMRs */					   \
-   1, 1, 1, 1, 1, 1, 1, 1			   \
+   1, 1, 1, 1, 1, 1, 1, 1,			   \
+   /* VMX128 v32-v127 */			   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,							   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,							   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,							   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,							   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,							   \
+   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1			   \
 }
 
 #define TOTAL_ALTIVEC_REGS	(LAST_ALTIVEC_REGNO - FIRST_ALTIVEC_REGNO + 1)
@@ -921,7 +954,18 @@ enum data_align { align_abi, align_opt, align_both };
    /* DMRs */							\
    111, 112, 113, 114, 115, 116, 117, 118,			\
    108, 109,							\
-   110								\
+   110,								\
+   /* VMX128 v32-v127 (fixed).  */				\
+   119, 120, 121, 122, 123, 124, 125, 126, 127, 128,						\
+   129, 130, 131, 132, 133, 134, 135, 136, 137, 138,						\
+   139, 140, 141, 142, 143, 144, 145, 146, 147, 148,						\
+   149, 150, 151, 152, 153, 154, 155, 156, 157, 158,						\
+   159, 160, 161, 162, 163, 164, 165, 166, 167, 168,						\
+   169, 170, 171, 172, 173, 174, 175, 176, 177, 178,						\
+   179, 180, 181, 182, 183, 184, 185, 186, 187, 188,						\
+   189, 190, 191, 192, 193, 194, 195, 196, 197, 198,						\
+   199, 200, 201, 202, 203, 204, 205, 206, 207, 208,						\
+   209, 210, 211, 212, 213, 214						\
 }
 
 /* True if register is floating-point.  */
@@ -948,6 +992,14 @@ enum data_align { align_abi, align_opt, align_both };
 
 /* True if register is a DMR register.  */
 #define DMR_REGNO_P(N) ((N) >= FIRST_DMR_REGNO && (N) <= LAST_DMR_REGNO)
+
+/* True if register is one of the Xenon VMX128 registers v32..v127.  */
+#define VMX128_HI_REGNO_P(N) \
+  ((N) >= FIRST_VMX128_REGNO && (N) <= LAST_VMX128_REGNO)
+
+/* True if the Xenon VMX128 registers v32..v127 can be used.  This follows
+   -mcpu=cell, which is also what passes -mvmx128 to the assembler.  */
+#define TARGET_VMX128 (TARGET_ALTIVEC && rs6000_cpu == PROCESSOR_CELL)
 
 /* Alternate name for any vector register supporting floating point, no matter
    which instruction set(s) are available.  */
@@ -1100,6 +1152,8 @@ enum reg_class
   CR_REGS,
   NON_FLOAT_REGS,
   CA_REGS,
+  VMX128_HI_REGS,
+  VMX128_REGS,
   ALL_REGS,
   LIM_REG_CLASSES
 };
@@ -1130,6 +1184,8 @@ enum reg_class
   "CR_REGS",								\
   "NON_FLOAT_REGS",							\
   "CA_REGS",								\
+  "VMX128_HI_REGS",							\
+  "VMX128_REGS",							\
   "ALL_REGS"								\
 }
 
@@ -1140,47 +1196,51 @@ enum reg_class
 #define REG_CLASS_CONTENTS						\
 {									\
   /* NO_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000000 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000 },			\
   /* BASE_REGS.  */							\
-  { 0xfffffffe, 0x00000000, 0x00000000, 0x00004008 },			\
+  { 0xfffffffe, 0x00000000, 0x00000000, 0x00004008, 0x00000000, 0x00000000, 0x00000000 },			\
   /* GENERAL_REGS.  */							\
-  { 0xffffffff, 0x00000000, 0x00000000, 0x00004008 },			\
+  { 0xffffffff, 0x00000000, 0x00000000, 0x00004008, 0x00000000, 0x00000000, 0x00000000 },			\
   /* FLOAT_REGS.  */							\
-  { 0x00000000, 0xffffffff, 0x00000000, 0x00000000 },			\
+  { 0x00000000, 0xffffffff, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000 },			\
   /* ALTIVEC_REGS.  */							\
-  { 0x00000000, 0x00000000, 0xffffffff, 0x00000000 },			\
+  { 0x00000000, 0x00000000, 0xffffffff, 0x00000000, 0x00000000, 0x00000000, 0x00000000 },			\
   /* VSX_REGS.  */							\
-  { 0x00000000, 0xffffffff, 0xffffffff, 0x00000000 },			\
+  { 0x00000000, 0xffffffff, 0xffffffff, 0x00000000, 0x00000000, 0x00000000, 0x00000000 },			\
   /* DMR_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x007f8000 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x007f8000, 0x00000000, 0x00000000, 0x00000000 },			\
   /* VRSAVE_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00001000 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00001000, 0x00000000, 0x00000000, 0x00000000 },			\
   /* VSCR_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00002000 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00002000, 0x00000000, 0x00000000, 0x00000000 },			\
   /* GEN_OR_FLOAT_REGS.  */						\
-  { 0xffffffff, 0xffffffff, 0x00000000, 0x00004008 },			\
+  { 0xffffffff, 0xffffffff, 0x00000000, 0x00004008, 0x00000000, 0x00000000, 0x00000000 },			\
   /* GEN_OR_VSX_REGS.  */						\
-  { 0xffffffff, 0xffffffff, 0xffffffff, 0x00004008 },			\
+  { 0xffffffff, 0xffffffff, 0xffffffff, 0x00004008, 0x00000000, 0x00000000, 0x00000000 },			\
   /* LINK_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000001 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0x00000000, 0x00000000 },			\
   /* CTR_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000002 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000002, 0x00000000, 0x00000000, 0x00000000 },			\
   /* LINK_OR_CTR_REGS.  */						\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000003 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000003, 0x00000000, 0x00000000, 0x00000000 },			\
   /* SPECIAL_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00001003 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00001003, 0x00000000, 0x00000000, 0x00000000 },			\
   /* SPEC_OR_GEN_REGS.  */						\
-  { 0xffffffff, 0x00000000, 0x00000000, 0x0000500b },			\
+  { 0xffffffff, 0x00000000, 0x00000000, 0x0000500b, 0x00000000, 0x00000000, 0x00000000 },			\
   /* CR0_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000010 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000010, 0x00000000, 0x00000000, 0x00000000 },			\
   /* CR_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000ff0 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000ff0, 0x00000000, 0x00000000, 0x00000000 },			\
   /* NON_FLOAT_REGS.  */						\
-  { 0xffffffff, 0x00000000, 0x00000000, 0x00004ffb },			\
+  { 0xffffffff, 0x00000000, 0x00000000, 0x00004ffb, 0x00000000, 0x00000000, 0x00000000 },			\
   /* CA_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000004 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000004, 0x00000000, 0x00000000, 0x00000000 },			\
+  /* VMX128_HI_REGS (v32-v127).  */					\
+  { 0x00000000, 0x00000000, 0x00000000, 0xff800000, 0xffffffff, 0xffffffff, 0x007fffff },	\
+  /* VMX128_REGS (v0-v127).  */						\
+  { 0x00000000, 0x00000000, 0xffffffff, 0xff800000, 0xffffffff, 0xffffffff, 0x007fffff },	\
   /* ALL_REGS.  */							\
-  { 0xffffffff, 0xffffffff, 0xffffffff, 0x007fffff }			\
+  { 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x007fffff }			\
 }
 
 /* The same information, inverted:
@@ -1205,6 +1265,7 @@ enum r6000_reg_class_enum {
   RS6000_CONSTRAINT_wx,		/* FPR register for STFIWX */
   RS6000_CONSTRAINT_wA,		/* BASE_REGS if 64-bit.  */
   RS6000_CONSTRAINT_wD,		/* Accumulator registers.  */
+  RS6000_CONSTRAINT_wV,		/* Any VMX128 register v0-v127.  */
   RS6000_CONSTRAINT_MAX
 };
 
@@ -2090,7 +2151,103 @@ extern char rs6000_reg_names[][8];	/* register names (0 vs. %r0).  */
   &rs6000_reg_names[115][0],	/* dmr4  */				\
   &rs6000_reg_names[116][0],	/* dmr5  */				\
   &rs6000_reg_names[117][0],	/* dmr6  */				\
-  &rs6000_reg_names[118][0] 	/* dmr7  */				\
+  &rs6000_reg_names[118][0],	/* dmr7  */				\
+  &rs6000_reg_names[119][0],	/* v32 */					\
+  &rs6000_reg_names[120][0],	/* v33 */					\
+  &rs6000_reg_names[121][0],	/* v34 */					\
+  &rs6000_reg_names[122][0],	/* v35 */					\
+  &rs6000_reg_names[123][0],	/* v36 */					\
+  &rs6000_reg_names[124][0],	/* v37 */					\
+  &rs6000_reg_names[125][0],	/* v38 */					\
+  &rs6000_reg_names[126][0],	/* v39 */					\
+  &rs6000_reg_names[127][0],	/* v40 */					\
+  &rs6000_reg_names[128][0],	/* v41 */					\
+  &rs6000_reg_names[129][0],	/* v42 */					\
+  &rs6000_reg_names[130][0],	/* v43 */					\
+  &rs6000_reg_names[131][0],	/* v44 */					\
+  &rs6000_reg_names[132][0],	/* v45 */					\
+  &rs6000_reg_names[133][0],	/* v46 */					\
+  &rs6000_reg_names[134][0],	/* v47 */					\
+  &rs6000_reg_names[135][0],	/* v48 */					\
+  &rs6000_reg_names[136][0],	/* v49 */					\
+  &rs6000_reg_names[137][0],	/* v50 */					\
+  &rs6000_reg_names[138][0],	/* v51 */					\
+  &rs6000_reg_names[139][0],	/* v52 */					\
+  &rs6000_reg_names[140][0],	/* v53 */					\
+  &rs6000_reg_names[141][0],	/* v54 */					\
+  &rs6000_reg_names[142][0],	/* v55 */					\
+  &rs6000_reg_names[143][0],	/* v56 */					\
+  &rs6000_reg_names[144][0],	/* v57 */					\
+  &rs6000_reg_names[145][0],	/* v58 */					\
+  &rs6000_reg_names[146][0],	/* v59 */					\
+  &rs6000_reg_names[147][0],	/* v60 */					\
+  &rs6000_reg_names[148][0],	/* v61 */					\
+  &rs6000_reg_names[149][0],	/* v62 */					\
+  &rs6000_reg_names[150][0],	/* v63 */					\
+  &rs6000_reg_names[151][0],	/* v64 */					\
+  &rs6000_reg_names[152][0],	/* v65 */					\
+  &rs6000_reg_names[153][0],	/* v66 */					\
+  &rs6000_reg_names[154][0],	/* v67 */					\
+  &rs6000_reg_names[155][0],	/* v68 */					\
+  &rs6000_reg_names[156][0],	/* v69 */					\
+  &rs6000_reg_names[157][0],	/* v70 */					\
+  &rs6000_reg_names[158][0],	/* v71 */					\
+  &rs6000_reg_names[159][0],	/* v72 */					\
+  &rs6000_reg_names[160][0],	/* v73 */					\
+  &rs6000_reg_names[161][0],	/* v74 */					\
+  &rs6000_reg_names[162][0],	/* v75 */					\
+  &rs6000_reg_names[163][0],	/* v76 */					\
+  &rs6000_reg_names[164][0],	/* v77 */					\
+  &rs6000_reg_names[165][0],	/* v78 */					\
+  &rs6000_reg_names[166][0],	/* v79 */					\
+  &rs6000_reg_names[167][0],	/* v80 */					\
+  &rs6000_reg_names[168][0],	/* v81 */					\
+  &rs6000_reg_names[169][0],	/* v82 */					\
+  &rs6000_reg_names[170][0],	/* v83 */					\
+  &rs6000_reg_names[171][0],	/* v84 */					\
+  &rs6000_reg_names[172][0],	/* v85 */					\
+  &rs6000_reg_names[173][0],	/* v86 */					\
+  &rs6000_reg_names[174][0],	/* v87 */					\
+  &rs6000_reg_names[175][0],	/* v88 */					\
+  &rs6000_reg_names[176][0],	/* v89 */					\
+  &rs6000_reg_names[177][0],	/* v90 */					\
+  &rs6000_reg_names[178][0],	/* v91 */					\
+  &rs6000_reg_names[179][0],	/* v92 */					\
+  &rs6000_reg_names[180][0],	/* v93 */					\
+  &rs6000_reg_names[181][0],	/* v94 */					\
+  &rs6000_reg_names[182][0],	/* v95 */					\
+  &rs6000_reg_names[183][0],	/* v96 */					\
+  &rs6000_reg_names[184][0],	/* v97 */					\
+  &rs6000_reg_names[185][0],	/* v98 */					\
+  &rs6000_reg_names[186][0],	/* v99 */					\
+  &rs6000_reg_names[187][0],	/* v100 */					\
+  &rs6000_reg_names[188][0],	/* v101 */					\
+  &rs6000_reg_names[189][0],	/* v102 */					\
+  &rs6000_reg_names[190][0],	/* v103 */					\
+  &rs6000_reg_names[191][0],	/* v104 */					\
+  &rs6000_reg_names[192][0],	/* v105 */					\
+  &rs6000_reg_names[193][0],	/* v106 */					\
+  &rs6000_reg_names[194][0],	/* v107 */					\
+  &rs6000_reg_names[195][0],	/* v108 */					\
+  &rs6000_reg_names[196][0],	/* v109 */					\
+  &rs6000_reg_names[197][0],	/* v110 */					\
+  &rs6000_reg_names[198][0],	/* v111 */					\
+  &rs6000_reg_names[199][0],	/* v112 */					\
+  &rs6000_reg_names[200][0],	/* v113 */					\
+  &rs6000_reg_names[201][0],	/* v114 */					\
+  &rs6000_reg_names[202][0],	/* v115 */					\
+  &rs6000_reg_names[203][0],	/* v116 */					\
+  &rs6000_reg_names[204][0],	/* v117 */					\
+  &rs6000_reg_names[205][0],	/* v118 */					\
+  &rs6000_reg_names[206][0],	/* v119 */					\
+  &rs6000_reg_names[207][0],	/* v120 */					\
+  &rs6000_reg_names[208][0],	/* v121 */					\
+  &rs6000_reg_names[209][0],	/* v122 */					\
+  &rs6000_reg_names[210][0],	/* v123 */					\
+  &rs6000_reg_names[211][0],	/* v124 */					\
+  &rs6000_reg_names[212][0],	/* v125 */					\
+  &rs6000_reg_names[213][0],	/* v126 */					\
+  &rs6000_reg_names[214][0]	/* v127 */					\
 }
 
 /* Table of additional register names to use in user input.  */
@@ -2120,6 +2277,30 @@ extern char rs6000_reg_names[][8];	/* register names (0 vs. %r0).  */
   {"v20",  84}, {"v21",  85}, {"v22",  86}, {"v23",  87},	\
   {"v24",  88}, {"v25",  89}, {"v26",  90}, {"v27",  91},	\
   {"v28",  92}, {"v29",  93}, {"v30",  94}, {"v31",  95},	\
+  {"v32", 119}, {"v33", 120}, {"v34", 121}, {"v35", 122},	\
+  {"v36", 123}, {"v37", 124}, {"v38", 125}, {"v39", 126},	\
+  {"v40", 127}, {"v41", 128}, {"v42", 129}, {"v43", 130},	\
+  {"v44", 131}, {"v45", 132}, {"v46", 133}, {"v47", 134},	\
+  {"v48", 135}, {"v49", 136}, {"v50", 137}, {"v51", 138},	\
+  {"v52", 139}, {"v53", 140}, {"v54", 141}, {"v55", 142},	\
+  {"v56", 143}, {"v57", 144}, {"v58", 145}, {"v59", 146},	\
+  {"v60", 147}, {"v61", 148}, {"v62", 149}, {"v63", 150},	\
+  {"v64", 151}, {"v65", 152}, {"v66", 153}, {"v67", 154},	\
+  {"v68", 155}, {"v69", 156}, {"v70", 157}, {"v71", 158},	\
+  {"v72", 159}, {"v73", 160}, {"v74", 161}, {"v75", 162},	\
+  {"v76", 163}, {"v77", 164}, {"v78", 165}, {"v79", 166},	\
+  {"v80", 167}, {"v81", 168}, {"v82", 169}, {"v83", 170},	\
+  {"v84", 171}, {"v85", 172}, {"v86", 173}, {"v87", 174},	\
+  {"v88", 175}, {"v89", 176}, {"v90", 177}, {"v91", 178},	\
+  {"v92", 179}, {"v93", 180}, {"v94", 181}, {"v95", 182},	\
+  {"v96", 183}, {"v97", 184}, {"v98", 185}, {"v99", 186},	\
+  {"v100", 187}, {"v101", 188}, {"v102", 189}, {"v103", 190},	\
+  {"v104", 191}, {"v105", 192}, {"v106", 193}, {"v107", 194},	\
+  {"v108", 195}, {"v109", 196}, {"v110", 197}, {"v111", 198},	\
+  {"v112", 199}, {"v113", 200}, {"v114", 201}, {"v115", 202},	\
+  {"v116", 203}, {"v117", 204}, {"v118", 205}, {"v119", 206},	\
+  {"v120", 207}, {"v121", 208}, {"v122", 209}, {"v123", 210},	\
+  {"v124", 211}, {"v125", 212}, {"v126", 213}, {"v127", 214},	\
   {"vrsave", 108}, {"vscr", 109},				\
   /* no additional names for: lr, ctr, ap */			\
   {"cr0",  100},{"cr1",  101},{"cr2",  102},{"cr3",  103},	\

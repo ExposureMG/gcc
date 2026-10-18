@@ -253,6 +253,23 @@
 (define_mode_iterator V16QI_V2DI [V16QI V2DI])
 
 ;; Vector move instructions.
+;; Xenon VMX128 registers v32-v127.  They are fixed registers that only
+;; explicit register variables ("register vector float x asm ("v64")") and
+;; asm operands reach; this lets such variables be copied, loaded and stored.
+;; It is placed before *altivec_mov<mode> so that it wins whenever one of
+;; these registers is involved.
+(define_insn "*vmx128_mov<mode>"
+  [(set (match_operand:VM2 0 "nonimmediate_operand" "=wV,wV,Z")
+	(match_operand:VM2 1 "input_operand" "wV,Z,wV"))]
+  "TARGET_VMX128
+   && ((REG_P (operands[0]) && VMX128_HI_REGNO_P (REGNO (operands[0])))
+       || (REG_P (operands[1]) && VMX128_HI_REGNO_P (REGNO (operands[1]))))"
+  "@
+   vor128 %0,%1,%1
+   lvx128 %0,%y1
+   stvx128 %1,%y0"
+  [(set_attr "type" "vecsimple,vecload,vecstore")])
+
 (define_insn "*altivec_mov<mode>"
   [(set (match_operand:VM2 0 "nonimmediate_operand" "=Z,v,v,?Y,?*r,?*r,v,v,?*r")
 	(match_operand:VM2 1 "input_operand" "v,Z,v,*r,Y,*r,j,W,W"))]
@@ -1830,7 +1847,7 @@
         (unspec:V4SI [(match_operand:V8HI 1 "register_operand" "v")
                       (match_operand:V8HI 2 "register_operand" "v")]
 		     UNSPEC_VMULEUH))]
-  "TARGET_ALTIVEC"
+  "(TARGET_ALTIVEC && 0)"
   "vmuleuh %0,%1,%2"
   [(set_attr "type" "veccomplex")])
 
@@ -1848,7 +1865,7 @@
         (unspec:V4SI [(match_operand:V8HI 1 "register_operand" "v")
                       (match_operand:V8HI 2 "register_operand" "v")]
 		     UNSPEC_VMULESH))]
-  "TARGET_ALTIVEC"
+  "(TARGET_ALTIVEC && 0)"
   "vmulesh %0,%1,%2"
   [(set_attr "type" "veccomplex")])
 
