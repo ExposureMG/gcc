@@ -1291,12 +1291,29 @@
 
 ;; Under VSX, vectors of 4/8 byte alignments do not need to be aligned
 ;; since the load already handles it.
+;;
+;; Xbox 360 Xenon VMX128 (plan 4.2): any misaligned vector access is done
+;; with the Cell/VMX128 left/right forms, lvlx + lvrx + vor for a load and
+;; stvlx + stvrx for a store (xenon_expand_movmisalign), so the vectorizer
+;; does not need the lvsl + vperm realignment; V16QI and V8HI are included
+;; for that (they are not in VEC_N, the VSX modes).
+(define_mode_iterator VEC_MISALIGN [V16QI V8HI V4SI V4SF V2DI V2DF V1TI KF TF])
+(define_mode_attr VEC_MISALIGN_vsx [(V16QI "false") (V8HI "false")
+				    (V4SI "true") (V4SF "true") (V2DI "true")
+				    (V2DF "true") (V1TI "true") (KF "true")
+				    (TF "true")])
+
 (define_expand "movmisalign<mode>"
- [(set (match_operand:VEC_N 0 "nonimmediate_operand")
-       (match_operand:VEC_N 1 "any_operand"))]
- "VECTOR_MEM_VSX_P (<MODE>mode) && TARGET_ALLOW_MOVMISALIGN"
+ [(set (match_operand:VEC_MISALIGN 0 "nonimmediate_operand")
+       (match_operand:VEC_MISALIGN 1 "any_operand"))]
+ "(<VEC_MISALIGN_vsx>
+   && VECTOR_MEM_VSX_P (<MODE>mode) && TARGET_ALLOW_MOVMISALIGN)
+  || (TARGET_VMX128 && VECTOR_MEM_ALTIVEC_P (<MODE>mode))"
 {
-  rs6000_emit_move (operands[0], operands[1], <MODE>mode);
+  if (TARGET_VMX128 && VECTOR_MEM_ALTIVEC_P (<MODE>mode))
+    xenon_expand_movmisalign (operands[0], operands[1], <MODE>mode);
+  else
+    rs6000_emit_move (operands[0], operands[1], <MODE>mode);
   DONE;
 })
 

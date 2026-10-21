@@ -1,0 +1,43 @@
+# libgcc fragment for 64-bit PowerPC bare-metal ELF targets
+# (powerpc64-xenon-elf, powerpc64-*-elf).
+#
+# Copyright (C) 2026 Free Software Foundation, Inc.
+#
+# This file is part of GCC.
+#
+# GCC is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3, or (at your option)
+# any later version.
+#
+# GCC is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with GCC; see the file COPYING3.  If not see
+# <http://www.gnu.org/licenses/>.
+
+# crti.o and crtn.o hold the prologue and epilogue of _init and _fini
+# (the .init/.fini sections), which newlib's __libc_init_array and
+# __libc_fini_array call.  The eabi-ci.S/sol-ci.S variants used by the
+# 32-bit ELF targets are empty for __powerpc64__, so this target has its
+# own, handling both the 64-bit ELFv1 ABI (descriptors in .opd) and the
+# 32-bit SysV ABI for a later -m32 multilib.
+CUSTOM_CRTIN = yes
+
+crti$(objext): $(srcdir)/config/rs6000/xenon-crti.S
+	$(crt_compile) -c $<
+
+crtn$(objext): $(srcdir)/config/rs6000/xenon-crtn.S
+	$(crt_compile) -c $<
+
+# Out-of-line save and restore routines for the Xenon VMX128 callee-saved
+# vector registers v64-v127 (_savevr128_N, _restvr128_N; plan 4.3), called
+# by -mvmx128 prologues and epilogues.  They assemble with ".machine xenon",
+# so they are built whatever the default CPU is; nothing pulls them in
+# unless VMX128 code calls them.  (The 64-bit _savevr_N / _restvr_N for
+# v20-v31 come from the linker.)
+LIB2ADD_ST += $(srcdir)/config/rs6000/crtsavevr128.S \
+	      $(srcdir)/config/rs6000/crtrestvr128.S

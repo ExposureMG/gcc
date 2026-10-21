@@ -30,6 +30,10 @@ typedef struct rs6000_stack {
   int first_gp_reg_save;	/* first callee saved GP register used */
   int first_fp_reg_save;	/* first callee saved FP register used */
   int first_altivec_reg_save;	/* first callee saved AltiVec register used */
+  int first_vmx128_reg_save;	/* first callee saved Xenon VMX128 register
+				   (v64-v127) used; LAST_VMX128_HI_REGNO + 1
+				   if none */
+  unsigned HOST_WIDE_INT vmx128_save_mask; /* bit N: v(64+N) is saved */
   int lr_save_p;		/* true if the link reg needs to be saved */
   int cr_save_p;		/* true if the CR reg needs to be saved */
   unsigned int vrsave_mask;	/* mask of vec registers to save */
@@ -41,6 +45,7 @@ typedef struct rs6000_stack {
   int gp_save_offset;		/* offset to save GP regs from initial SP */
   int fp_save_offset;		/* offset to save FP regs from initial SP */
   int altivec_save_offset;	/* offset to save AltiVec regs from initial SP */
+  int vmx128_save_offset;	/* offset to save v64-v127 from initial SP */
   int rop_hash_save_offset;	/* offset to save ROP hash from initial SP */
   int lr_save_offset;		/* offset to save LR from initial SP */
   int cr_save_offset;		/* offset to save CR from initial SP */
@@ -56,6 +61,7 @@ typedef struct rs6000_stack {
   int gp_size;			/* size of saved GP registers */
   int fp_size;			/* size of saved FP registers */
   int altivec_size;		/* size of saved AltiVec registers */
+  int vmx128_size;		/* size of saved VMX128 registers v64-v127 */
   int rop_hash_size;		/* size of ROP hash slot */
   int cr_size;			/* size to hold CR if not in fixed area */
   int vrsave_size;		/* size to hold VRSAVE */

@@ -3378,6 +3378,23 @@ asm ("xsaddqp %0,%1,%2"
      : "v" (v2), "v" (v3));
 @end smallexample
 
+@item wV
+Any Xbox 360 Xenon VMX128 vector register, @code{v0}@dots{}@code{v127},
+if @option{-mvmx128} is used (the default for @option{-mcpu=xenon});
+otherwise the same as @code{v}.  Only the VMX128 (@code{*128})
+instructions accept @code{v32}@dots{}@code{v127}.
+
+@item wU
+A Xenon VMX128 register that can be the control operand of
+@code{vperm128}, @code{v0}@dots{}@code{v7}, if @option{-mvmx128} is used;
+otherwise, @code{NO_REGS}.
+
+@smallexample
+asm ("vperm128 %0,%1,%2,%3"
+     : "=wV" (v1)
+     : "wV" (v2), "wV" (v3), "wU" (control));
+@end smallexample
+
 @ifset INTERNALS
 @item h
 A special register (@code{vrsave}, @code{ctr}, or @code{lr}).

@@ -57,6 +57,24 @@
 
 #include "rs6000-vecdefines.h"
 
+/* The Xbox 360 Xenon PPE has the Cell vector load/store left/right
+   instructions (rs6000-vecdefines.h only defines their intrinsics for the
+   Cell PPU, __PPU__).  The integer multiply, multiply-sum and sum-across
+   intrinsics (vec_mule, vec_mulo, vec_msum, vec_msums, vec_madds,
+   vec_mradds, vec_mladd, vec_sum4s, vec_sum2s, vec_sums) stay defined: on
+   Xenon the compiler rejects them with an error naming the missing
+   instruction.  */
+#if defined (_ARCH_XENON) && !defined (__PPU__)
+#define vec_lvlx __builtin_vec_lvlx
+#define vec_lvlxl __builtin_vec_lvlxl
+#define vec_lvrx __builtin_vec_lvrx
+#define vec_lvrxl __builtin_vec_lvrxl
+#define vec_stvlx __builtin_vec_stvlx
+#define vec_stvlxl __builtin_vec_stvlxl
+#define vec_stvrx __builtin_vec_stvrx
+#define vec_stvrxl __builtin_vec_stvrxl
+#endif
+
 /* Deprecated interfaces.  */
 #define vec_lvx vec_ld
 #define vec_lvxl vec_ldl

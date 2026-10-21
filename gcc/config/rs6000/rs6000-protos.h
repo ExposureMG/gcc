@@ -56,6 +56,10 @@ extern rtx rs6000_got_register (rtx);
 extern rtx find_addr_reg (rtx);
 extern rtx gen_easy_altivec_constant (rtx);
 extern const char *output_vec_const_move (rtx *);
+extern bool xenon_vmx128_constant_p (rtx, machine_mode);
+extern const char *rs6000_output_vmx128_move (rtx *);
+extern const char *xenon_vmx128_output (const char *, const char *);
+extern void xenon_expand_movmisalign (rtx, rtx, machine_mode);
 extern const char *rs6000_output_move_128bit (rtx *);
 extern bool rs6000_move_128bit_ok_p (rtx []);
 extern bool rs6000_split_128bit_ok_p (rtx []);
@@ -155,6 +159,7 @@ extern rtx rs6000_machopic_legitimize_pic_address (rtx, machine_mode,
 						   rtx);
 extern rtx rs6000_allocate_stack_temp (machine_mode, bool, bool);
 extern align_flags rs6000_loop_align (rtx);
+extern align_flags rs6000_label_align (rtx_insn *);
 extern void rs6000_split_logical (rtx [], enum rtx_code, bool, bool, bool);
 extern bool rs6000_function_pcrel_p (struct function *);
 extern bool rs6000_pcrel_p (void);
@@ -309,6 +314,17 @@ extern void rs6000_sibcall_darwin (rtx, rtx, rtx, rtx);
 extern void rs6000_aix_asm_output_dwarf_table_ref (char *);
 extern void get_ppc476_thunk_name (char name[32]);
 extern int rs6000_store_data_bypass_p (rtx_insn *, rtx_insn *);
+extern void rs6000_adjust_reg_alloc_order (void);
+extern bool rs6000_xenon_avoid_microcode_p (void);
+extern bool rs6000_xenon_avoid_algebraic_load_p (void);
+extern bool rs6000_xenon_vest_p (rtx_insn *);
+extern bool rs6000_xenon_lvsl_p (rtx_insn *);
+extern bool rs6000_xenon_vec_predicate_p (rtx_insn *);
+extern bool rs6000_xenon_vscr_move_p (rtx_insn *);
+extern bool rs6000_xenon_mftb_p (rtx_insn *);
+extern bool rs6000_xenon_mffs_p (rtx_insn *);
+extern bool rs6000_xenon_hwsync_p (rtx_insn *);
+extern bool rs6000_xenon_mtcrf_multi_p (rtx_insn *);
 extern HOST_WIDE_INT rs6000_builtin_mask_calculate (void);
 extern void rs6000_asm_output_dwarf_pcrel (FILE *file, int size,
 					   const char *label);
@@ -326,6 +342,11 @@ extern bool rs6000_pragma_target_parse (tree, tree);
 extern void rs6000_activate_target_options (tree new_tree);
 extern void rs6000_target_modify_macros (bool, HOST_WIDE_INT);
 extern void (*rs6000_target_modify_macros_ptr) (bool, HOST_WIDE_INT);
+extern void rs6000_target_modify_cpu_macros (bool, enum processor_type,
+					     HOST_WIDE_INT);
+extern void (*rs6000_target_modify_cpu_macros_ptr) (bool,
+						     enum processor_type,
+						     HOST_WIDE_INT);
 
 #ifdef NO_DOLLAR_IN_LABEL
 const char * rs6000_xcoff_strip_dollar (const char *);

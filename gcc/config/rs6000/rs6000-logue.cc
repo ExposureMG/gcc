@@ -174,6 +174,105 @@ first_altivec_reg_to_save (void)
   return i;
 }
 
+/* Xenon VMX128 (plan 4.3): v64-v127 are callee-saved, v32-v63 volatile.
+   VRSAVE only covers v0-v31, so the saves of v64-v127 are driven by
+   df_regs_ever_live alone (through save_reg_p).  They have their own save
+   area, directly below the AltiVec one (rs6000_stack_info), with one
+   16-byte slot per saved register, in register order.  Return the mask of
+   the registers to save: bit N stands for v(64+N).  As for the AltiVec
+   registers, nothing is saved outside the AltiVec ABI (and there
+   rs6000_conditional_register_usage makes v64-v127 call-used).  */
+
+static unsigned HOST_WIDE_INT
+compute_vmx128_save_mask (void)
+{
+  unsigned HOST_WIDE_INT mask = 0;
+
+  if (!TARGET_VMX128 || !TARGET_ALTIVEC_ABI)
+    return 0;
+
+  for (int i = FIRST_SAVED_VMX128_REGNO; i <= LAST_VMX128_HI_REGNO; ++i)
+    if (save_reg_p (i))
+      mask |= HOST_WIDE_INT_1U << (i - FIRST_SAVED_VMX128_REGNO);
+
+  return mask;
+}
+
+/* Return true if VMX128 register REGNO (v64-v127) is saved in the frame
+   described by INFO.  */
+
+static inline bool
+vmx128_reg_saved_p (const rs6000_stack_t *info, int regno)
+{
+  return (IN_RANGE (regno, FIRST_SAVED_VMX128_REGNO, LAST_VMX128_HI_REGNO)
+	  && ((info->vmx128_save_mask
+	       >> (regno - FIRST_SAVED_VMX128_REGNO)) & 1) != 0);
+}
+
+/* Return the offset from the initial stack pointer of the save slot of
+   VMX128 register REGNO, which must be saved.  The slots of the saved
+   registers follow each other in register order from the bottom of the
+   area up.  */
+
+static int
+vmx128_save_slot_offset (const rs6000_stack_t *info, int regno)
+{
+  int n = regno - FIRST_SAVED_VMX128_REGNO;
+  unsigned HOST_WIDE_INT below
+    = info->vmx128_save_mask & ((HOST_WIDE_INT_1U << n) - 1);
+
+  gcc_checking_assert (vmx128_reg_saved_p (info, regno));
+  return info->vmx128_save_offset + 16 * popcount_hwi (below);
+}
+
+/* Return true if the saved VMX128 registers are exactly
+   first_vmx128_reg_save .. v127, which the out-of-line routines need.  */
+
+static bool
+vmx128_saves_dense_p (const rs6000_stack_t *info)
+{
+  return (info->vmx128_save_mask != 0
+	  && info->vmx128_save_mask
+	     == (HOST_WIDE_INT_M1U
+		 << (info->first_vmx128_reg_save - FIRST_SAVED_VMX128_REGNO)));
+}
+
+/* Return true if the VMX128 registers of INFO are saved and restored by
+   the out-of-line routines _savevr128_N / _restvr128_N rather than
+   inline.  The routines take vN..v127 with r0 pointing past the end of the
+   area and r12 as scratch (see xenon-logue.md), which is how the 64-bit
+   ELF prologue already calls the linker's _savevr_N; they are only used
+   for the 64-bit AIX-style ABIs.  Inline, each register costs a li and a
+   stvx128 in the prologue and a li and an lvx128 in the epilogue; a call
+   costs an addi (setting r0) and a bl in each, plus the branches.  The
+   bl clobbers LR, so a function that would not save LR anyway (a leaf
+   with no other out-of-line routine, LR_SAVED is false) also pays mflr,
+   std, ld and mtlr.  So for size the routines win from two registers on
+   when LR is saved anyway (4 instructions against 8) and from three
+   registers otherwise (8 against 12; at two both are 8, and inline needs
+   no calls and no LR slot); for speed only big save sets go out of line
+   (--param=xenon-vmx128-ool-threshold, default 16).  */
+
+static bool
+rs6000_vmx128_savres_ool_p (const rs6000_stack_t *info, bool lr_saved)
+{
+  if (!vmx128_saves_dense_p (info))
+    return false;
+
+  if (crtl->calls_eh_return
+      || cfun->machine->ra_need_lr
+      || !(DEFAULT_ABI == ABI_AIX || DEFAULT_ABI == ABI_ELFv2)
+      || !TARGET_64BIT)
+    return false;
+
+  int count = popcount_hwi (info->vmx128_save_mask);
+  if (optimize_function_for_size_p (cfun))
+    return count >= (lr_saved ? 2 : 3);
+
+  return (rs6000_xenon_vmx128_ool_threshold != 0
+	  && count >= rs6000_xenon_vmx128_ool_threshold);
+}
+
 /* Return a 32-bit mask of the AltiVec registers we need to set in
    VRSAVE.  Bit n of the return value is 1 if Vn is live.  The MSB in
    the 32-bit word is 0.  */
@@ -232,6 +331,7 @@ compute_save_world_info (rs6000_stack_t *info)
        && info->first_fp_reg_save == FIRST_SAVED_FP_REGNO
        && info->first_gp_reg_save == FIRST_SAVED_GP_REGNO
        && info->first_altivec_reg_save == FIRST_SAVED_ALTIVEC_REGNO
+       && info->vmx128_size == 0
        && info->cr_save_p);
 
   /* This will not work in conjunction with sibcalls.  Make sure there
@@ -311,11 +411,13 @@ enum {
   SAVE_NOINLINE_GPRS_SAVES_LR = 0x8,
   SAVE_NOINLINE_FPRS_SAVES_LR = 0x10,
   SAVE_INLINE_VRS = 0x20,
+  SAVE_INLINE_VR128S = 0x40,	/* Xenon VMX128 v64-v127.  */
   REST_MULTIPLE = 0x100,
   REST_INLINE_GPRS = 0x200,
   REST_INLINE_FPRS = 0x400,
   REST_NOINLINE_FPRS_DOESNT_RESTORE_LR = 0x800,
-  REST_INLINE_VRS = 0x1000
+  REST_INLINE_VRS = 0x1000,
+  REST_INLINE_VR128S = 0x2000	/* Xenon VMX128 v64-v127.  */
 };
 
 static int
@@ -436,14 +538,30 @@ rs6000_savres_strategy (rs6000_stack_t *info,
 	  break;
 	}
 
+  /* Xenon VMX128 v64-v127: both inline or both out of line.  Whether LR
+     is saved anyway: info->lr_save_p covers calls and the other reasons
+     computed before this function, the strategy bits so far the other
+     out-of-line routines (GPRs are always inline here).  */
+  if (!rs6000_vmx128_savres_ool_p (info,
+				   info->lr_save_p
+				   || !(strategy & SAVE_INLINE_FPRS)
+				   || !(strategy & SAVE_INLINE_VRS)
+				   || !(strategy & SAVE_INLINE_GPRS)
+				   || !(strategy & REST_INLINE_FPRS)
+				   || !(strategy & REST_INLINE_VRS)
+				   || !(strategy & REST_INLINE_GPRS)))
+    strategy |= SAVE_INLINE_VR128S | REST_INLINE_VR128S;
+
   /* info->lr_save_p isn't yet set if the only reason lr needs to be
      saved is an out-of-line save or restore.  Set up the value for
      the next test (excluding out-of-line gprs).  */
   bool lr_save_p = (info->lr_save_p
 		    || !(strategy & SAVE_INLINE_FPRS)
 		    || !(strategy & SAVE_INLINE_VRS)
+		    || !(strategy & SAVE_INLINE_VR128S)
 		    || !(strategy & REST_INLINE_FPRS)
-		    || !(strategy & REST_INLINE_VRS));
+		    || !(strategy & REST_INLINE_VRS)
+		    || !(strategy & REST_INLINE_VR128S));
 
   if (TARGET_MULTIPLE
       && !TARGET_POWERPC64
@@ -559,15 +677,17 @@ rs6000_savres_strategy (rs6000_stack_t *info,
 		+---------------------------------------+
 		| Float/int conversion temporary (X)	| 24+P+A+L
 		+---------------------------------------+
-		| Save area for AltiVec registers (W)	| 24+P+A+L+X
+		| Save area for VMX128 registers (Q)	| 24+P+A+L+X
 		+---------------------------------------+
-		| AltiVec alignment padding (Y)		| 24+P+A+L+X+W
+		| Save area for AltiVec registers (W)	| 24+P+A+L+X+Q
 		+---------------------------------------+
-		| Save area for VRSAVE register (Z)	| 24+P+A+L+X+W+Y
+		| AltiVec alignment padding (Y)		| 24+P+A+L+X+Q+W
 		+---------------------------------------+
-		| Save area for GP registers (G)	| 24+P+A+X+L+X+W+Y+Z
+		| Save area for VRSAVE register (Z)	| 24+P+A+L+X+Q+W+Y
 		+---------------------------------------+
-		| Save area for FP registers (F)	| 24+P+A+X+L+X+W+Y+Z+G
+		| Save area for GP registers (G)	| 24+P+A+X+L+X+Q+W+Y+Z
+		+---------------------------------------+
+		| Save area for FP registers (F)	| 24+P+A+X+L+X+Q+W+Y+Z+G
 		+---------------------------------------+
 	old SP->| back chain to caller's caller		|
 		+---------------------------------------+
@@ -577,6 +697,12 @@ rs6000_savres_strategy (rs6000_stack_t *info,
 
    The required alignment for AIX configurations is two words (i.e., 8
    or 16 bytes).
+
+   Q is the save area of the Xbox 360 Xenon VMX128 callee-saved registers
+   v64-v127 (TARGET_VMX128, plan 4.3): one 16-byte slot per register
+   saved, in register order, so it is 16-byte aligned like W; it is empty
+   for every other CPU.  The same area sits below W in the ELFv2 and V.4
+   layouts.  VRSAVE does not cover v32-v127.
 
    The ELFv2 ABI is a variant of the AIX ABI.  Stack frames look like:
 
@@ -597,7 +723,9 @@ rs6000_savres_strategy (rs6000_stack_t *info,
 		+---------------------------------------+
 		| Optional ROP hash slot (R)		|  32+P+A+L
 		+---------------------------------------+
-		| Save area for AltiVec registers (W)	|  32+P+A+L+R
+		| Save area for VMX128 registers (Q)	|  32+P+A+L+R
+		+---------------------------------------+
+		| Save area for AltiVec registers (W)	|  32+P+A+L+R+Q
 		+---------------------------------------+
 		| AltiVec alignment padding (Y)		|  32+P+A+L+R+W
 		+---------------------------------------+
@@ -712,6 +840,14 @@ rs6000_stack_info (void)
   info->altivec_size = 16 * (LAST_ALTIVEC_REGNO + 1
 				 - info->first_altivec_reg_save);
 
+  /* Xenon VMX128 v64-v127: one slot per saved register.  */
+  info->vmx128_save_mask = compute_vmx128_save_mask ();
+  info->first_vmx128_reg_save
+    = (info->vmx128_save_mask
+       ? FIRST_SAVED_VMX128_REGNO + ctz_hwi (info->vmx128_save_mask)
+       : LAST_VMX128_HI_REGNO + 1);
+  info->vmx128_size = 16 * popcount_hwi (info->vmx128_save_mask);
+
   /* Does this function call anything (apart from sibling calls)?  */
   info->calls_p = (!crtl->is_leaf || cfun->machine->ra_needs_full_frame);
   info->rop_hash_size = 0;
@@ -802,7 +938,7 @@ rs6000_stack_info (void)
 
 	  /* Align stack so vector save area is on a quadword boundary.
 	     The padding goes above the vectors.  */
-	  if (info->altivec_size != 0)
+	  if (info->altivec_size != 0 || info->vmx128_size != 0)
 	    info->altivec_padding_size = info->vrsave_save_offset & 0xF;
 
 	  info->altivec_save_offset = info->vrsave_save_offset
@@ -811,9 +947,15 @@ rs6000_stack_info (void)
 	  gcc_assert (info->altivec_size == 0
 		      || info->altivec_save_offset % 16 == 0);
 
+	  /* The Xenon VMX128 v64-v127 save area is right below.  */
+	  info->vmx128_save_offset = (info->altivec_save_offset
+				      - info->vmx128_size);
+	  gcc_assert (info->vmx128_size == 0
+		      || info->vmx128_save_offset % 16 == 0);
+
 	  /* Adjust for ROP protection.  */
 	  info->rop_hash_save_offset
-	    = info->altivec_save_offset - info->rop_hash_size;
+	    = info->vmx128_save_offset - info->rop_hash_size;
 	}
       else
 	  /* Adjust for ROP protection.  */
@@ -836,15 +978,19 @@ rs6000_stack_info (void)
 	  info->vrsave_save_offset = info->cr_save_offset - info->vrsave_size;
 
 	  /* Align stack so vector save area is on a quadword boundary.  */
-	  if (info->altivec_size != 0)
+	  if (info->altivec_size != 0 || info->vmx128_size != 0)
 	    info->altivec_padding_size = 16 - (-info->vrsave_save_offset % 16);
 
 	  info->altivec_save_offset = info->vrsave_save_offset
 				      - info->altivec_padding_size
 				      - info->altivec_size;
 
+	  /* The Xenon VMX128 v64-v127 save area is right below.  */
+	  info->vmx128_save_offset = (info->altivec_save_offset
+				      - info->vmx128_size);
+
 	  /* Adjust for AltiVec case.  */
-	  info->ehrd_offset = info->altivec_save_offset;
+	  info->ehrd_offset = info->vmx128_save_offset;
 	}
       else
 	info->ehrd_offset = info->cr_save_offset;
@@ -858,6 +1004,7 @@ rs6000_stack_info (void)
 				  + info->gp_size
 				  + info->altivec_size
 				  + info->altivec_padding_size
+				  + info->vmx128_size
 				  + info->rop_hash_size
 				  + ehrd_size
 				  + ehcr_size
@@ -892,9 +1039,11 @@ rs6000_stack_info (void)
   if (!(info->savres_strategy & SAVE_INLINE_GPRS)
       || !(info->savres_strategy & SAVE_INLINE_FPRS)
       || !(info->savres_strategy & SAVE_INLINE_VRS)
+      || !(info->savres_strategy & SAVE_INLINE_VR128S)
       || !(info->savres_strategy & REST_INLINE_GPRS)
       || !(info->savres_strategy & REST_INLINE_FPRS)
-      || !(info->savres_strategy & REST_INLINE_VRS))
+      || !(info->savres_strategy & REST_INLINE_VRS)
+      || !(info->savres_strategy & REST_INLINE_VR128S))
     info->lr_save_p = 1;
 
   if (info->lr_save_p)
@@ -965,6 +1114,15 @@ debug_stack_info (rs6000_stack_t *info)
     fprintf (stderr, "\tfirst_altivec_reg_save = %5d\n",
 	     info->first_altivec_reg_save);
 
+  if (info->vmx128_save_mask)
+    {
+      fprintf (stderr, "\tfirst_vmx128_reg_save = %5d (v%d)\n",
+	       info->first_vmx128_reg_save,
+	       VMX128_REGNUM (info->first_vmx128_reg_save));
+      fprintf (stderr, "\tvmx128_save_mask    = " HOST_WIDE_INT_PRINT_HEX "\n",
+	       info->vmx128_save_mask);
+    }
+
   if (info->lr_save_p)
     fprintf (stderr, "\tlr_save_p           = %5d\n", info->lr_save_p);
 
@@ -989,6 +1147,10 @@ debug_stack_info (rs6000_stack_t *info)
   if (info->altivec_size)
     fprintf (stderr, "\taltivec_save_offset = %5d\n",
 	     info->altivec_save_offset);
+
+  if (info->vmx128_size)
+    fprintf (stderr, "\tvmx128_save_offset  = %5d\n",
+	     info->vmx128_save_offset);
 
   if (info->vrsave_size)
     fprintf (stderr, "\tvrsave_save_offset  = %5d\n",
@@ -1029,6 +1191,9 @@ debug_stack_info (rs6000_stack_t *info)
 
   if (info->altivec_size)
     fprintf (stderr, "\taltivec_size        = %5d\n", info->altivec_size);
+
+  if (info->vmx128_size)
+    fprintf (stderr, "\tvmx128_size         = %5d\n", info->vmx128_size);
 
   if (info->vrsave_size)
     fprintf (stderr, "\tvrsave_size         = %5d\n", info->vrsave_size);
@@ -1431,10 +1596,16 @@ rs6000_aix_asm_output_dwarf_table_ref (char * frame_table_label)
 }
 
 /* This ties together stack memory (MEM with an alias set of frame_alias_set)
-   and the change to the stack pointer.  */
+   and the change to the stack pointer.  With ALL_MEMORY (the epilogue
+   stack pops with -mvmx128, rs6000_emit_epilogue_stack_tie) the tie also
+   clobbers (mem:BLK (scratch)), which conflicts with every memory
+   reference: the frame alias set alone does not order accesses to local
+   variables of other alias sets (e.g. an int array in a frame over 32 KiB)
+   against the pop, and sched2 can then move them after it, onto
+   deallocated stack.  */
 
 static void
-rs6000_emit_stack_tie (rtx fp, bool hard_frame_needed)
+rs6000_emit_stack_tie (rtx fp, bool hard_frame_needed, bool all_memory = false)
 {
   rtvec p;
   int i;
@@ -1449,7 +1620,11 @@ rs6000_emit_stack_tie (rtx fp, bool hard_frame_needed)
 	    && REGNO (fp) == HARD_FRAME_POINTER_REGNUM)))
     regs[i++] = fp;
 
-  p = rtvec_alloc (i);
+  p = rtvec_alloc (i + (all_memory ? 1 : 0));
+  if (all_memory)
+    RTVEC_ELT (p, i)
+      = gen_rtx_CLOBBER (VOIDmode,
+			 gen_rtx_MEM (BLKmode, gen_rtx_SCRATCH (Pmode)));
   while (--i >= 0)
     {
       rtx mem = gen_frame_mem (BLKmode, regs[i]);
@@ -1457,6 +1632,18 @@ rs6000_emit_stack_tie (rtx fp, bool hard_frame_needed)
     }
 
   emit_insn (gen_stack_tie (gen_rtx_PARALLEL (VOIDmode, p)));
+}
+
+/* The stack tie before an epilogue stack pop.  With -mvmx128 it orders
+   every memory access against the pop (ALL_MEMORY above), so that nothing
+   reads or writes the frame below the red zone after it is deallocated;
+   otherwise it is the upstream tie, so that the code for every other CPU
+   and for -mno-vmx128 is unchanged.  */
+
+static void
+rs6000_emit_epilogue_stack_tie (rtx fp, bool hard_frame_needed)
+{
+  rs6000_emit_stack_tie (fp, hard_frame_needed, TARGET_VMX128);
 }
 
 /* Allocate SIZE_INT bytes on the stack using a store with update style insn
@@ -2479,6 +2666,69 @@ rs6000_emit_savres_rtx (rs6000_stack_t *info,
   return insn;
 }
 
+/* The Xenon VMX128 out-of-line save/restore routines _savevr128_N and
+   _restvr128_N, N = 64..127 (libgcc/config/rs6000/crtsavevr128.S and
+   crtrestvr128.S), indexed by N - 64 and save (1) / restore (0).  */
+static GTY(()) rtx savres_vr128_routine_syms[64][2];
+
+/* Return the SYMBOL_REF of the VMX128 out-of-line routine that saves (SAVE)
+   or restores vN..v127, N being the first register saved in INFO.  */
+
+static rtx
+rs6000_vmx128_savres_routine_sym (const rs6000_stack_t *info, bool save)
+{
+  int n = info->first_vmx128_reg_save - FIRST_SAVED_VMX128_REGNO;
+
+  gcc_assert (IN_RANGE (n, 0, 63));
+  rtx sym = savres_vr128_routine_syms[n][save];
+  if (sym == NULL)
+    {
+      char name[32];
+
+      sprintf (name, "%s%d", save ? "_savevr128_" : "_restvr128_", n + 64);
+      sym = savres_vr128_routine_syms[n][save]
+	= gen_rtx_SYMBOL_REF (Pmode, ggc_strdup (name));
+      SYMBOL_REF_FLAGS (sym) |= SYMBOL_FLAG_FUNCTION;
+    }
+  return sym;
+}
+
+/* Emit the call to the VMX128 out-of-line save (SAVE) or restore routine
+   for INFO, whose registers must be dense (vmx128_saves_dense_p).  r0 must
+   point just past the end of the save area.  The insn describes the
+   stores or loads relative to r0; see *xenon_save_vregs128_<mode> in
+   xenon-logue.md.  */
+
+static rtx_insn *
+rs6000_emit_vmx128_savres_rtx (const rs6000_stack_t *info, bool save)
+{
+  int start_reg = info->first_vmx128_reg_save;
+  int n_regs = LAST_VMX128_HI_REGNO + 1 - start_reg;
+  int end_save = info->vmx128_save_offset + info->vmx128_size;
+  rtx r0 = gen_rtx_REG (Pmode, 0);
+  rtvec p = rtvec_alloc (4 + n_regs);
+  int j = 0;
+
+  gcc_assert (vmx128_saves_dense_p (info));
+
+  RTVEC_ELT (p, j++) = gen_hard_reg_clobber (Pmode, LR_REGNO);
+  RTVEC_ELT (p, j++)
+    = gen_rtx_USE (VOIDmode, rs6000_vmx128_savres_routine_sym (info, save));
+  RTVEC_ELT (p, j++) = gen_hard_reg_clobber (Pmode, 12);
+  RTVEC_ELT (p, j++) = gen_rtx_USE (VOIDmode, r0);
+
+  for (int i = 0; i < n_regs; i++)
+    {
+      int regno = start_reg + i;
+      RTVEC_ELT (p, j++)
+	= gen_frame_set (gen_rtx_REG (V4SImode, regno), r0,
+			 vmx128_save_slot_offset (info, regno) - end_save,
+			 save);
+    }
+
+  return emit_insn (gen_rtx_PARALLEL (VOIDmode, p));
+}
+
 /* Emit prologue code to store CR fields that need to be saved into REG.  This
    function should only be called when moving the non-volatile CRs to REG, it
    is not a general purpose routine to move the entire set of CRs to REG.
@@ -2669,7 +2919,9 @@ rs6000_get_separate_components (void)
       && (info->savres_strategy & SAVE_INLINE_FPRS)
       && (info->savres_strategy & REST_INLINE_FPRS)
       && (info->savres_strategy & SAVE_INLINE_VRS)
-      && (info->savres_strategy & REST_INLINE_VRS))
+      && (info->savres_strategy & REST_INLINE_VRS)
+      && (info->savres_strategy & SAVE_INLINE_VR128S)
+      && (info->savres_strategy & REST_INLINE_VR128S))
     {
       int offset = info->lr_save_offset;
       if (info->push_p)
@@ -3208,6 +3460,7 @@ rs6000_emit_prologue (void)
 	       || info->first_fp_reg_save < 64
 	       || info->first_gp_reg_save < 32
 	       || info->altivec_size != 0
+	       || info->vmx128_size != 0
 	       || info->vrsave_size != 0
 	       || crtl->calls_eh_return)
 	ptr_regno = 12;
@@ -3661,10 +3914,16 @@ rs6000_emit_prologue (void)
       int ptr_off = 0;
 
       /* If saving altivec regs we need to be able to address all save
-	 locations using a 16-bit offset.  */
+	 locations using a 16-bit offset.  The same goes for the Xenon
+	 VMX128 save area, which is right below the AltiVec one, so the
+	 pointer below (to the end of the AltiVec area) reaches it too.  */
       if ((strategy & SAVE_INLINE_VRS) == 0
+	  || (strategy & SAVE_INLINE_VR128S) == 0
 	  || (info->altivec_size != 0
 	      && (info->altivec_save_offset + info->altivec_size - 16
+		  + info->total_size - frame_off) > 32767)
+	  || (info->vmx128_size != 0
+	      && (info->vmx128_save_offset + info->vmx128_size - 16
 		  + info->total_size - frame_off) > 32767)
 	  || (info->vrsave_size != 0
 	      && (info->vrsave_save_offset
@@ -3783,6 +4042,63 @@ rs6000_emit_prologue (void)
 		insn = emit_insn (gen_altivec_stvx_v4si_internal (mem, savereg));
 	      }
 
+	    rs6000_frame_related (insn, frame_reg_rtx, sp_off - frame_off,
+				  areg, GEN_INT (offset));
+	  }
+    }
+
+  /* Save the Xenon VMX128 callee-saved registers v64-v127, after the
+     AltiVec ones and for the same reason.  */
+  if (!WORLD_SAVE_P (info)
+      && info->vmx128_size != 0 && (strategy & SAVE_INLINE_VR128S) == 0)
+    {
+      /* Out of line: _savevr128_N with r0 pointing just past the end of
+	 the save area and r12 as scratch (xenon-logue.md).  */
+      int end_save = info->vmx128_save_offset + info->vmx128_size;
+      int ptr_off = -end_save;
+      rtx ptr_reg = gen_rtx_REG (Pmode, 0);
+      rtx scratch_reg = gen_rtx_REG (Pmode, 12);
+
+      NOT_INUSE (0);
+      sp_adjust = 0;
+      if (end_save + frame_off != 0)
+	emit_insn (gen_add3_insn (ptr_reg, frame_reg_rtx,
+				  GEN_INT (end_save + frame_off)));
+      else
+	emit_move_insn (ptr_reg, frame_reg_rtx);
+
+      insn = rs6000_emit_vmx128_savres_rtx (info, true);
+      /* r0 is the top of this frame minus PTR_OFF, i.e. the incoming
+	 stack pointer plus END_SAVE; the incoming stack pointer is the
+	 current one plus SP_OFF.  */
+      rs6000_frame_related (insn, ptr_reg, sp_off - ptr_off,
+			    NULL_RTX, NULL_RTX);
+      if (REGNO (frame_reg_rtx) == REGNO (scratch_reg))
+	{
+	  /* The routine clobbered our frame reg; rebuild it from r0.  */
+	  emit_move_insn (frame_reg_rtx, ptr_reg);
+	  frame_off = ptr_off;
+	}
+    }
+  else if (!WORLD_SAVE_P (info) && info->vmx128_size != 0)
+    {
+      for (int i = info->first_vmx128_reg_save;
+	   i <= LAST_VMX128_HI_REGNO; ++i)
+	if (vmx128_reg_saved_p (info, i))
+	  {
+	    HOST_WIDE_INT offset = (vmx128_save_slot_offset (info, i)
+				    + frame_off);
+	    rtx savereg = gen_rtx_REG (V4SImode, i);
+
+	    gcc_checking_assert (IN_RANGE (offset, -0x8000, 0x7fff));
+	    NOT_INUSE (0);
+	    rtx areg = gen_rtx_REG (Pmode, 0);
+	    emit_move_insn (areg, GEN_INT (offset));
+
+	    /* stvx128 takes [reg+reg] addresses only.  */
+	    rtx mem = gen_frame_mem (V4SImode,
+				     gen_rtx_PLUS (Pmode, frame_reg_rtx, areg));
+	    insn = emit_insn (gen_xenon_stvx128_v4si_internal (mem, savereg));
 	    rs6000_frame_related (insn, frame_reg_rtx, sp_off - frame_off,
 				  areg, GEN_INT (offset));
 	  }
@@ -4288,6 +4604,67 @@ emit_cfa_restores (rtx cfa_restores)
   RTX_FRAME_RELATED_P (insn) = 1;
 }
 
+/* Emit the epilogue restores of the Xenon VMX128 callee-saved registers
+   v64-v127 of INFO, inline or by a call to _restvr128_N (STRATEGY), from
+   the frame whose top is *FRAME_REG_RTX + *FRAME_OFF.  BEFORE_POP is true
+   when the stack pointer still covers the save area.  REG_CFA_RESTORE notes
+   for the restored registers are added to *CFA_RESTORES as the AltiVec
+   restores do: before the pop for the slots that the pop leaves outside
+   the red zone, after it for V.4, and always when shrink-wrapping.  */
+
+static void
+rs6000_emit_vmx128_restores (const rs6000_stack_t *info, int strategy,
+			     rtx *frame_reg_rtx, HOST_WIDE_INT *frame_off,
+			     bool before_pop, rtx *cfa_restores)
+{
+  if ((strategy & REST_INLINE_VR128S) == 0)
+    {
+      int end_save = info->vmx128_save_offset + info->vmx128_size;
+      rtx ptr_reg = gen_rtx_REG (Pmode, 0);
+
+      if (end_save + *frame_off != 0)
+	emit_insn (gen_add3_insn (ptr_reg, *frame_reg_rtx,
+				  GEN_INT (end_save + *frame_off)));
+      else
+	emit_move_insn (ptr_reg, *frame_reg_rtx);
+
+      rs6000_emit_vmx128_savres_rtx (info, false);
+
+      if (REGNO (*frame_reg_rtx) == 12)
+	{
+	  /* The routine clobbered the frame reg; rebuild it from r0.  */
+	  emit_move_insn (*frame_reg_rtx, ptr_reg);
+	  *frame_off = -end_save;
+	}
+    }
+  else
+    for (int i = info->first_vmx128_reg_save; i <= LAST_VMX128_HI_REGNO; ++i)
+      if (vmx128_reg_saved_p (info, i))
+	{
+	  rtx reg = gen_rtx_REG (V4SImode, i);
+	  HOST_WIDE_INT offset = vmx128_save_slot_offset (info, i) + *frame_off;
+
+	  gcc_checking_assert (IN_RANGE (offset, -0x8000, 0x7fff));
+	  rtx areg = gen_rtx_REG (Pmode, 0);
+	  emit_move_insn (areg, GEN_INT (offset));
+
+	  /* lvx128 takes [reg+reg] addresses only.  */
+	  rtx mem = gen_frame_mem (V4SImode,
+				   gen_rtx_PLUS (Pmode, *frame_reg_rtx, areg));
+	  emit_insn (gen_xenon_lvx128_v4si_internal (reg, mem));
+	}
+
+  for (int i = info->first_vmx128_reg_save; i <= LAST_VMX128_HI_REGNO; ++i)
+    if (vmx128_reg_saved_p (info, i)
+	&& (before_pop
+	    ? (flag_shrink_wrap
+	       || offset_below_red_zone_p (vmx128_save_slot_offset (info, i)))
+	    : (DEFAULT_ABI == ABI_V4 || flag_shrink_wrap)))
+      *cfa_restores = alloc_reg_note (REG_CFA_RESTORE,
+				      gen_rtx_REG (V4SImode, i),
+				      *cfa_restores);
+}
+
 /* Emit function epilogue as insns.  */
 
 void
@@ -4547,6 +4924,32 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
 	  }
     }
 
+  /* Restore the Xenon VMX128 registers v64-v127 if we must do so before
+     adjusting the stack.  Their area is below the AltiVec one, so this is
+     the case whenever the AltiVec registers were restored above.  */
+  if (info->vmx128_size != 0
+      && (ALWAYS_RESTORE_ALTIVEC_BEFORE_POP
+	  || (DEFAULT_ABI != ABI_V4
+	      && offset_below_red_zone_p (info->vmx128_save_offset))))
+    {
+      if (frame_reg_rtx == sp_reg_rtx)
+	{
+	  if (use_backchain_to_restore_sp)
+	    {
+	      /* r11, since an out-of-line restore clobbers r12.  */
+	      frame_reg_rtx = gen_rtx_REG (Pmode, 11);
+	      emit_move_insn (frame_reg_rtx,
+			      gen_rtx_MEM (Pmode, sp_reg_rtx));
+	      frame_off = 0;
+	    }
+	  else if (frame_pointer_needed_indeed)
+	    frame_reg_rtx = hard_frame_pointer_rtx;
+	}
+
+      rs6000_emit_vmx128_restores (info, strategy, &frame_reg_rtx,
+				   &frame_off, true, &cfa_restores);
+    }
+
   /* Restore VRSAVE if we must do so before adjusting the stack.  */
   if (info->vrsave_size != 0
       && (ALWAYS_RESTORE_ALTIVEC_BEFORE_POP
@@ -4575,6 +4978,33 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
       emit_insn (generate_set_vrsave (reg, info, 1));
     }
 
+  /* With a frame pointer or a back chain restore, the stack is popped
+     below before the exception handler data registers are loaded from
+     their slots, which are below the red zone when the frame has a Xenon
+     VMX128 area (always 1 KiB in a function calling __builtin_eh_return).
+     Load them now, while the stack still covers them.  Nothing after
+     this point changes r3-r6.  Only for frames with a VMX128 area, so
+     that the code for every other CPU is unchanged (upstream has the same
+     latent problem at -O0 for slots at -512 and below).  */
+  bool eh_data_loaded = false;
+  if (epilogue_type == EPILOGUE_TYPE_EH_RETURN
+      && info->vmx128_size != 0
+      && DEFAULT_ABI != ABI_V4
+      && frame_reg_rtx != sp_reg_rtx
+      && (use_backchain_to_restore_sp || frame_pointer_needed_indeed)
+      && offset_below_red_zone_p (info->ehrd_offset))
+    {
+      for (i = 0; EH_RETURN_DATA_REGNO (i) != INVALID_REGNUM; ++i)
+	{
+	  unsigned int regno = EH_RETURN_DATA_REGNO (i);
+	  rtx mem = gen_frame_mem_offset (reg_mode, frame_reg_rtx,
+					  info->ehrd_offset + frame_off
+					  + reg_size * (int) i);
+	  emit_move_insn (gen_rtx_REG (reg_mode, regno), mem);
+	}
+      eh_data_loaded = true;
+    }
+
   insn = NULL_RTX;
   /* If we have a large stack frame, restore the old stack pointer
      using the backchain.  */
@@ -4587,6 +5017,11 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
 	  if (DEFAULT_ABI == ABI_V4)
 	    frame_reg_rtx = gen_rtx_REG (Pmode, 11);
 
+	  /* Prevent reordering memory accesses against the stack pointer
+	     restore (only with -mvmx128; see below).  */
+	  else if (TARGET_VMX128)
+	    rs6000_emit_epilogue_stack_tie (sp_reg_rtx, frame_pointer_needed);
+
 	  insn = emit_move_insn (frame_reg_rtx,
 				 gen_rtx_MEM (Pmode, sp_reg_rtx));
 	  frame_off = 0;
@@ -4597,6 +5032,18 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
 	;
       else
 	{
+	  /* Prevent reordering memory accesses against stack pointer
+	     restore: the vector restores above read slots below the red
+	     zone through FRAME_REG_RTX, and sched2 would otherwise move
+	     them (and their REG_CFA_RESTORE notes, attached to this insn)
+	     past the pop.  FRAME_REG_RTX is not the stack pointer here only
+	     when such restores were emitted.  Done only with -mvmx128 (where
+	     the VMX128 area, below the AltiVec one, makes this common), so
+	     that the code for every other CPU and for -mno-vmx128 is
+	     unchanged; upstream has the same latent problem for v20-v31.  */
+	  if (TARGET_VMX128)
+	    rs6000_emit_epilogue_stack_tie (frame_reg_rtx,
+					    frame_pointer_needed);
 	  insn = emit_move_insn (sp_reg_rtx, frame_reg_rtx);
 	  frame_reg_rtx = sp_reg_rtx;
 	}
@@ -4611,7 +5058,7 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
       /* Prevent reordering memory accesses against stack pointer restore.  */
       else if (cfun->calls_alloca
 	       || offset_below_red_zone_p (-info->total_size))
-	rs6000_emit_stack_tie (frame_reg_rtx, true);
+	rs6000_emit_epilogue_stack_tie (frame_reg_rtx, true);
 
       insn = emit_insn (gen_add3_insn (frame_reg_rtx, hard_frame_pointer_rtx,
 				       GEN_INT (info->total_size)));
@@ -4624,7 +5071,7 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
       /* Prevent reordering memory accesses against stack pointer restore.  */
       if (cfun->calls_alloca
 	  || offset_below_red_zone_p (-info->total_size))
-	rs6000_emit_stack_tie (frame_reg_rtx, false);
+	rs6000_emit_epilogue_stack_tie (frame_reg_rtx, false);
       insn = emit_insn (gen_add3_insn (sp_reg_rtx, sp_reg_rtx,
 				       GEN_INT (info->total_size)));
       frame_off = 0;
@@ -4760,6 +5207,15 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
 	  }
     }
 
+  /* Restore the Xenon VMX128 registers v64-v127 if we have not done so
+     already.  */
+  if (!ALWAYS_RESTORE_ALTIVEC_BEFORE_POP
+      && info->vmx128_size != 0
+      && (DEFAULT_ABI == ABI_V4
+	  || !offset_below_red_zone_p (info->vmx128_save_offset)))
+    rs6000_emit_vmx128_restores (info, strategy, &frame_reg_rtx,
+				 &frame_off, false, &cfa_restores);
+
   /* Restore VRSAVE if we have not done so already.  */
   if (!ALWAYS_RESTORE_ALTIVEC_BEFORE_POP
       && info->vrsave_size != 0
@@ -4864,7 +5320,7 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
 				     frame_off + RS6000_TOC_SAVE_SLOT));
 	}
 
-      for (i = 0; ; ++i)
+      for (i = 0; !eh_data_loaded; ++i)
 	{
 	  rtx mem;
 

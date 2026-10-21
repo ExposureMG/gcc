@@ -103,6 +103,24 @@
   "@internal Floating point register @code{FPR} if TARGET_MMA is enabled.
   1024 bit Dense math register @code{DMR} if TARGET_DMF is enabled.")
 
+;; Xbox 360 Xenon VMX128 (plan 4.1).
+(define_register_constraint "wU" "rs6000_constraints[RS6000_CONSTRAINT_wU]"
+  "A Xenon VMX128 register that can be the control operand of
+   @code{vperm128}, @code{v0}@dots{}@code{v7}, with @option{-mvmx128}
+   (the default for @option{-mcpu=xenon}); otherwise @code{NO_REGS}.")
+
+(define_register_constraint "wV" "rs6000_constraints[RS6000_CONSTRAINT_wV]"
+  "Any Xenon VMX128 vector register, @code{v0}@dots{}@code{v127}, with
+   @option{-mvmx128} (the default for @option{-mcpu=xenon}); otherwise
+   the same as @code{v}.")
+
+(define_constraint "wW"
+  "@internal A vector constant that VMX128 instructions alone can load into
+   any of @code{v0}@dots{}@code{v127}: every word the same and a
+   @code{vspltisw128} immediate, or the sign-bit vector."
+  (and (match_code "const_vector")
+       (match_test "xenon_vmx128_constant_p (op, mode)")))
+
 ;; wB needs ISA 2.07 VUPKHSW
 (define_constraint "wB"
   "@internal Signed 5-bit constant integer that can be loaded into an

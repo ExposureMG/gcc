@@ -70,8 +70,19 @@ rs6000_invalid_builtin (enum rs6000_gen_builtins fncode)
 {
   size_t j = (size_t) fncode;
   const char *name = rs6000_builtin_info[j].bifname;
+  enum bif_enable enable = rs6000_builtin_info[j].enable;
 
-  switch (rs6000_builtin_info[j].enable)
+  /* -mcpu=xenon: an AltiVec builtin of a later vector ISA (e.g. the ISA 2.07
+     __builtin_altivec_vmulesw behind vec_mule on vector int) is one more
+     instruction the Xenon PPE does not implement.  Name it the same way as
+     the integer multiply and sum-across builtins below, rather than suggest
+     a -mcpu the target cannot use.  */
+  if (TARGET_XENON_CPU && TARGET_ALTIVEC
+      && (enable == ENB_P8V || enable == ENB_P9V)
+      && startswith (name, "__builtin_altivec_v"))
+    enable = ENB_ALTIVEC_INTMUL;
+
+  switch (enable)
     {
     case ENB_P5:
       error ("%qs requires the %qs option", name, "-mcpu=power5");
@@ -87,7 +98,44 @@ rs6000_invalid_builtin (enum rs6000_gen_builtins fncode)
       error ("%qs requires the %qs option", name, "-maltivec");
       break;
     case ENB_CELL:
-      error ("%qs requires the %qs option", name, "-mcpu=cell");
+      if (TARGET_ALTIVEC)
+	error ("%qs requires the %qs or %qs option", name, "-mcpu=cell",
+	       "-mcpu=xenon");
+      else
+	error ("%qs requires the %qs option", name, "-maltivec");
+      break;
+    case ENB_ALTIVEC_INTMUL:
+    case ENB_ALTIVEC_VSUM:
+      if (TARGET_ALTIVEC)
+	{
+	  /* Only -mcpu=xenon gets here: the PPE's AltiVec unit lacks the
+	     integer multiply and sum-across instructions (and, from above,
+	     the later-ISA vector ones).  Name the
+	     instruction, taken from the builtin name
+	     (__builtin_altivec_<insn>[_be]).  */
+	  const char *prefix = "__builtin_altivec_";
+	  const char *insn = name;
+	  if (startswith (insn, prefix))
+	    insn += strlen (prefix);
+	  size_t len = strcspn (insn, "_");
+	  char *insn_name = XALLOCAVEC (char, len + 1);
+	  memcpy (insn_name, insn, len);
+	  insn_name[len] = '\0';
+	  error ("%qs is not supported on Xenon: the %qs instruction is not "
+		 "implemented by the Xenon PPE", name, insn_name);
+	}
+      else
+	error ("%qs requires the %qs option", name, "-maltivec");
+      break;
+    case ENB_XENON_VMX128:
+      /* The Xbox 360 Xenon VMX128-only builtins (__builtin_xenon_*) need
+	 TARGET_VMX128: -mcpu=xenon, AltiVec, and not -mno-vmx128.  */
+      if (!TARGET_XENON_CPU)
+	error ("%qs requires the %qs option", name, "-mcpu=xenon");
+      else if (!TARGET_ALTIVEC)
+	error ("%qs requires the %qs option", name, "-maltivec");
+      else
+	error ("%qs requires the %qs option", name, "-mvmx128");
       break;
     case ENB_VSX:
       error ("%qs requires the %qs option", name, "-mvsx");
@@ -197,7 +245,13 @@ rs6000_builtin_is_supported (enum rs6000_gen_builtins fncode)
     case ENB_VSX:
       return TARGET_VSX;
     case ENB_CELL:
-      return TARGET_ALTIVEC && rs6000_cpu == PROCESSOR_CELL;
+      return TARGET_CELL_VEC_LDST;
+    case ENB_ALTIVEC_INTMUL:
+      return TARGET_ALTIVEC_INT_MUL;
+    case ENB_ALTIVEC_VSUM:
+      return TARGET_ALTIVEC_VSUM;
+    case ENB_XENON_VMX128:
+      return TARGET_VMX128;
     case ENB_IEEE128_HW:
       return TARGET_FLOAT128_HW;
     case ENB_DFP:
@@ -253,7 +307,11 @@ rs6000_builtin_decl (unsigned code, bool /* initialize_p */)
 tree
 rs6000_builtin_mask_for_load (void)
 {
-  /* Don't use lvsl/vperm for P8 and similarly efficient machines.  */
+  /* Don't use lvsl/vperm for P8 and similarly efficient machines.  Nor
+     for Xbox 360 Xenon VMX128, where misaligned accesses use lvlx/lvrx
+     (movmisalign<mode>) instead of the lvsl + vperm realignment.  */
+  if (TARGET_VMX128)
+    return 0;
   if ((TARGET_ALTIVEC && !TARGET_VSX)
       || (TARGET_VSX && !TARGET_EFFICIENT_UNALIGNED_VSX))
     return altivec_builtin_mask_for_load;
@@ -3000,6 +3058,34 @@ stv_expand_builtin (insn_code icode, rtx *op,
     }
   else
     {
+      /* The Cell left/right stores write only part of the 16 bytes at EA
+	 (FINDINGS 1.4): on Xenon, describe them as BLKmode stores of
+	 unknown size (xenon_stv*x_blk in altivec.md), so that DSE does not
+	 delete earlier stores to the bytes they leave alone.  Cell keeps
+	 the upstream patterns.  */
+      if (TARGET_XENON_CPU)
+	switch (icode)
+	  {
+	  case CODE_FOR_altivec_stvlx:
+	    icode = CODE_FOR_xenon_stvlx_blk;
+	    tmode = BLKmode;
+	    break;
+	  case CODE_FOR_altivec_stvlxl:
+	    icode = CODE_FOR_xenon_stvlxl_blk;
+	    tmode = BLKmode;
+	    break;
+	  case CODE_FOR_altivec_stvrx:
+	    icode = CODE_FOR_xenon_stvrx_blk;
+	    tmode = BLKmode;
+	    break;
+	  case CODE_FOR_altivec_stvrxl:
+	    icode = CODE_FOR_xenon_stvrxl_blk;
+	    tmode = BLKmode;
+	    break;
+	  default:
+	    break;
+	  }
+
       if (!insn_data[icode].operand[1].predicate (op[0], smode))
 	op[0] = copy_to_mode_reg (smode, op[0]);
 

@@ -220,6 +220,9 @@ enum bif_stanza
  BSTZ_P6_64,
  BSTZ_ALTIVEC,
  BSTZ_CELL,
+ BSTZ_ALTIVEC_INTMUL,
+ BSTZ_ALTIVEC_VSUM,
+ BSTZ_XENON_VMX128,
  BSTZ_VSX,
  BSTZ_P7,
  BSTZ_P7_64,
@@ -258,6 +261,9 @@ static stanza_entry stanza_map[NUMBIFSTANZAS] =
     { "power6-64",	BSTZ_P6_64	},
     { "altivec",	BSTZ_ALTIVEC	},
     { "cell",		BSTZ_CELL	},
+    { "altivec-intmul",	BSTZ_ALTIVEC_INTMUL },
+    { "altivec-vsum",	BSTZ_ALTIVEC_VSUM },
+    { "xenon-vmx128",	BSTZ_XENON_VMX128 },
     { "vsx",		BSTZ_VSX	},
     { "power7",		BSTZ_P7		},
     { "power7-64",	BSTZ_P7_64	},
@@ -287,6 +293,9 @@ static const char *enable_string[NUMBIFSTANZAS] =
     "ENB_P6_64",
     "ENB_ALTIVEC",
     "ENB_CELL",
+    "ENB_ALTIVEC_INTMUL",
+    "ENB_ALTIVEC_VSUM",
+    "ENB_XENON_VMX128",
     "ENB_VSX",
     "ENB_P7",
     "ENB_P7_64",
@@ -2275,6 +2284,9 @@ write_decls (void)
   fprintf (header_file, "  ENB_P6_64,\n");
   fprintf (header_file, "  ENB_ALTIVEC,\n");
   fprintf (header_file, "  ENB_CELL,\n");
+  fprintf (header_file, "  ENB_ALTIVEC_INTMUL,\n");
+  fprintf (header_file, "  ENB_ALTIVEC_VSUM,\n");
+  fprintf (header_file, "  ENB_XENON_VMX128,\n");
   fprintf (header_file, "  ENB_VSX,\n");
   fprintf (header_file, "  ENB_P7,\n");
   fprintf (header_file, "  ENB_P7_64,\n");

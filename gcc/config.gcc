@@ -3090,6 +3090,29 @@ powerpc*-*-freebsd*)
 		;;
 	esac
 	;;
+powerpc64-xenon-elf* | powerpc64-*-elf*)
+	# 64-bit bare-metal ELF with newlib: ELF64 ELFv1 ABI (function
+	# descriptors in .opd, TOC in r2), LP64, -m64 by default, static
+	# linking only.  Modelled on powerpc64*-*-freebsd* with the OS bits
+	# removed.  gnu-user.h and freebsd-spec.h are only there because
+	# rs6000/sysv4.h refers to the GNU_USER_TARGET_* and FBSD_* spec
+	# macros (the 32-bit powerpc-*-elf* entry does the same);
+	# rs6000/xenon64.h overrides everything OS-specific from them.
+	# powerpc64-xenon-elf is the Xbox 360 (Xenon) target; any other
+	# powerpc64-*-elf* gets the same ABI without the Xenon OS macros.
+	tm_file="${tm_file} elfos.h gnu-user.h freebsd-spec.h newlib-stdint.h"
+	tm_file="${tm_file} rs6000/sysv4.h rs6000/default64.h rs6000/xenon64.h"
+	extra_options="${extra_options} rs6000/sysv4.opt rs6000/linux64.opt"
+	tmake_file="rs6000/t-fprules rs6000/t-ppccomm ${tmake_file} rs6000/t-xenon64"
+	case ${target} in
+	    powerpc64-xenon-*)
+		tm_defines="${tm_defines} TARGET_XENON_OS=1"
+		# The VMX128 intrinsics (__builtin_xenon_* wrappers).
+		extra_headers="${extra_headers} xenon_vmx.h"
+		;;
+	esac
+	use_gcc_stdint=wrap
+	;;
 powerpc-*-netbsd*)
 	tm_file="${tm_file} elfos.h gnu-user.h ${nbsd_tm_file} freebsd-spec.h rs6000/sysv4.h rs6000/netbsd.h"
 	extra_options="${extra_options} netbsd.opt netbsd-elf.opt"
@@ -4207,6 +4230,14 @@ if test x$with_cpu = x ; then
       ;;
     visium-*-*)
       with_cpu=gr5
+      ;;
+    powerpc64-xenon-elf*)
+      # The Xbox 360 target defaults to its own CPU.
+      with_cpu=xenon
+      ;;
+    powerpc64-*-elf*)
+      # Generic 64-bit bare-metal PowerPC.
+      with_cpu=powerpc64
       ;;
   esac
 
@@ -5885,7 +5916,8 @@ case "${target}" in
 			| 476 | 476fp | 505 | 601 | 602 | 603 | 603e | ec603e \
 			| 604 | 604e | 620 | 630 | 740 | 750 | 7400 | 7450 \
 			| a2 | e300c[23] | 854[08] | e500mc | e500mc64 | e5500 | e6500 \
-			| titan | 801 | 821 | 823 | 860 | 970 | G3 | G4 | G5 | cell)
+			| titan | 801 | 821 | 823 | 860 | 970 | G3 | G4 | G5 | cell \
+			| xenon)
 				# OK
 				;;
 			*)

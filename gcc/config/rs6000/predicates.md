@@ -82,6 +82,30 @@
   return ALTIVEC_REGNO_P (REGNO (op));
 })
 
+;; Return 1 if op is an Xbox 360 Xenon VMX128 vector register (v0-v127; a
+;; pseudo before register allocation).  Without TARGET_VMX128 this is the
+;; same as altivec_register_operand.
+(define_predicate "vmx128_register_operand"
+  (match_operand 0 "register_operand")
+{
+  if (SUBREG_P (op))
+    {
+      if (TARGET_NO_SF_SUBREG && sf_subreg_operand (op, mode))
+	return 0;
+
+      op = SUBREG_REG (op);
+    }
+
+  if (!REG_P (op))
+    return 0;
+
+  if (!HARD_REGISTER_P (op))
+    return 1;
+
+  return (ALTIVEC_REGNO_P (REGNO (op))
+	  || (TARGET_VMX128 && VMX128_HI_REGNO_P (REGNO (op))));
+})
+
 ;; Return 1 if op is a VSX register.
 (define_predicate "vsx_register_operand"
   (match_operand 0 "register_operand")
@@ -398,6 +422,9 @@
     return 1;
 
   if (TARGET_ALTIVEC && ALTIVEC_REGNO_P (REGNO (op)))
+    return 1;
+
+  if (TARGET_VMX128 && VMX128_HI_REGNO_P (REGNO (op)))
     return 1;
 
   if (TARGET_VSX && VSX_REGNO_P (REGNO (op)))
@@ -1198,6 +1225,20 @@
   return (INTVAL (op) == VECTOR_ELEMENT_SCALAR_64BIT);
 })
 
+;; Return 1 if the operand is a register or a memory operand that lha may
+;; load (the HImode source of a sign extension).  Xenon: lha/lhax are
+;; microcoded (20-23 cycles, FINDINGS 2.3), lhz + extsh is used instead.
+(define_predicate "lha_operand"
+  (match_operand 0 "reg_or_mem_operand")
+{
+  /* Before register allocation only; a stack slot LRA substitutes is
+     split into lhz + extsh after reload (xenon.md).  */
+  if ((MEM_P (op) || (SUBREG_P (op) && MEM_P (SUBREG_REG (op))))
+      && !lra_in_progress && !reload_completed)
+    return !rs6000_xenon_avoid_algebraic_load_p ();
+  return true;
+})
+
 ;; Return 1 if the operand is a general register or memory operand without
 ;; pre_inc or pre_dec or pre_modify, which produces invalid form of PowerPC
 ;; lwa instruction.
@@ -1213,6 +1254,14 @@
   if (gpc_reg_operand (inner, mode))
     return true;
   if (!any_memory_operand (inner, mode))
+    return false;
+
+  /* Xenon: lwa/lwax are microcoded (23-24 cycles, FINDINGS 2.3); without a
+     memory operand the sign extension becomes lwz + extsw.  Before register
+     allocation only; a stack slot LRA substitutes is split into lwz + extsw
+     after reload (xenon.md).  */
+  if (rs6000_xenon_avoid_algebraic_load_p ()
+      && !lra_in_progress && !reload_completed)
     return false;
 
   addr = XEXP (inner, 0);

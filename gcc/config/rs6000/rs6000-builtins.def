@@ -401,23 +401,11 @@
   void __builtin_altivec_mtvscr (vsi);
     MTVSCR altivec_mtvscr {}
 
-  const vsll __builtin_altivec_vmulesw (vsi, vsi);
-    VMULESW vec_widen_smult_even_v4si {}
-
-  const vull __builtin_altivec_vmuleuw (vui, vui);
-    VMULEUW vec_widen_umult_even_v4si {}
-
-  const vsll __builtin_altivec_vmulosw (vsi, vsi);
-    VMULOSW vec_widen_smult_odd_v4si {}
-
-  const vull __builtin_altivec_vmulouw (vui, vui);
-    VMULOUW vec_widen_umult_odd_v4si {}
-
   const vsc __builtin_altivec_nabs_v16qi (vsc);
     NABS_V16QI nabsv16qi2 {}
 
   const vf __builtin_altivec_nabs_v4sf (vf);
-    NABS_V4SF vsx_nabsv4sf2 {}
+    NABS_V4SF altivec_nabsv4sf2 {}
 
   const vsi __builtin_altivec_nabs_v4si (vsi);
     NABS_V4SI nabsv4si2 {}
@@ -701,12 +689,6 @@
   const vui __builtin_altivec_vmaxuw (vui, vui);
     VMAXUW umaxv4si3 {}
 
-  vss __builtin_altivec_vmhaddshs (vss, vss, vss);
-    VMHADDSHS altivec_vmhaddshs {}
-
-  vss __builtin_altivec_vmhraddshs (vss, vss, vss);
-    VMHRADDSHS altivec_vmhraddshs {}
-
   const vf __builtin_altivec_vminfp (vf, vf);
     VMINFP sminv4sf3 {}
 
@@ -728,9 +710,6 @@
   const vui __builtin_altivec_vminuw (vui, vui);
     VMINUW uminv4si3 {}
 
-  const vss __builtin_altivec_vmladduhm (vss, vss, vss);
-    VMLADDUHM fmav8hi4 {}
-
   const vsc __builtin_altivec_vmrghb (vsc, vsc);
     VMRGHB altivec_vmrghb {}
 
@@ -748,48 +727,6 @@
 
   const vsi __builtin_altivec_vmrglw (vsi, vsi);
     VMRGLW altivec_vmrglw {}
-
-  const vsi __builtin_altivec_vmsummbm (vsc, vuc, vsi);
-    VMSUMMBM altivec_vmsummbm {}
-
-  const vsi __builtin_altivec_vmsumshm (vss, vss, vsi);
-    VMSUMSHM altivec_vmsumshm {}
-
-  vsi __builtin_altivec_vmsumshs (vss, vss, vsi);
-    VMSUMSHS altivec_vmsumshs {}
-
-  const vui __builtin_altivec_vmsumubm (vuc, vuc, vui);
-    VMSUMUBM altivec_vmsumubm {}
-
-  const vui __builtin_altivec_vmsumuhm (vus, vus, vui);
-    VMSUMUHM altivec_vmsumuhm {}
-
-  vui __builtin_altivec_vmsumuhs (vus, vus, vui);
-    VMSUMUHS altivec_vmsumuhs {}
-
-  const vss __builtin_altivec_vmulesb (vsc, vsc);
-    VMULESB vec_widen_smult_even_v16qi {}
-
-  const vsi __builtin_altivec_vmulesh (vss, vss);
-    VMULESH vec_widen_smult_even_v8hi {}
-
-  const vus __builtin_altivec_vmuleub (vuc, vuc);
-    VMULEUB vec_widen_umult_even_v16qi {}
-
-  const vui __builtin_altivec_vmuleuh (vus, vus);
-    VMULEUH vec_widen_umult_even_v8hi {}
-
-  const vss __builtin_altivec_vmulosb (vsc, vsc);
-    VMULOSB vec_widen_smult_odd_v16qi {}
-
-  const vus __builtin_altivec_vmuloub (vuc, vuc);
-    VMULOUB vec_widen_umult_odd_v16qi {}
-
-  const vsi __builtin_altivec_vmulosh (vss, vss);
-    VMULOSH vec_widen_smult_odd_v8hi {}
-
-  const vui __builtin_altivec_vmulouh (vus, vus);
-    VMULOUH vec_widen_umult_odd_v8hi {}
 
   fpmath vf __builtin_altivec_vnmsubfp (vf, vf, vf);
     VNMSUBFP nfmsv4sf4 {}
@@ -841,12 +778,6 @@
 
   const vuc __builtin_altivec_vperm_16qi_uns (vuc, vuc, vuc);
     VPERM_16QI_UNS altivec_vperm_v16qi_uns {}
-
-  const vsq __builtin_altivec_vperm_1ti (vsq, vsq, vuc);
-    VPERM_1TI altivec_vperm_v1ti {}
-
-  const vuq __builtin_altivec_vperm_1ti_uns (vuq, vuq, vuc);
-    VPERM_1TI_UNS altivec_vperm_v1ti_uns {}
 
   const vf __builtin_altivec_vperm_4sf (vf, vf, vuc);
     VPERM_4SF altivec_vperm_v4sf {}
@@ -941,12 +872,6 @@
   const vuc __builtin_altivec_vsel_16qi_uns (vuc, vuc, vuc);
     VSEL_16QI_UNS vector_select_v16qi_uns {}
 
-  const vsq __builtin_altivec_vsel_1ti (vsq, vsq, vuq);
-    VSEL_1TI vector_select_v1ti {}
-
-  const vuq __builtin_altivec_vsel_1ti_uns (vuq, vuq, vuq);
-    VSEL_1TI_UNS vector_select_v1ti_uns {}
-
   const vf __builtin_altivec_vsel_4sf (vf, vf, vf);
     VSEL_4SF vector_select_v4sf {}
 
@@ -979,9 +904,6 @@
 
   const vss __builtin_altivec_vsldoi_8hi (vss, vss, const int<4>);
     VSLDOI_8HI altivec_vsldoi_v8hi {}
-
-  const vsq __builtin_altivec_vsldoi_v1ti (vsq, vsq, const int<4>);
-    VSLDOI_1TI altivec_vsldoi_v1ti {}
 
   const vss __builtin_altivec_vslh (vss, vus);
     VSLH vashlv8hi3 {}
@@ -1067,24 +989,6 @@
   const vui __builtin_altivec_vsubuws (vui, vui);
     VSUBUWS altivec_vsubuws {}
 
-  const vsi __builtin_altivec_vsum2sws (vsi, vsi);
-    VSUM2SWS altivec_vsum2sws {}
-
-  const vsi __builtin_altivec_vsum4sbs (vsc, vsi);
-    VSUM4SBS altivec_vsum4sbs {}
-
-  const vsi __builtin_altivec_vsum4shs (vss, vsi);
-    VSUM4SHS altivec_vsum4shs {}
-
-  const vui __builtin_altivec_vsum4ubs (vuc, vui);
-    VSUM4UBS altivec_vsum4ubs {}
-
-  const vsi __builtin_altivec_vsumsws (vsi, vsi);
-    VSUMSWS altivec_vsumsws {}
-
-  const vsi __builtin_altivec_vsumsws_be (vsi, vsi);
-    VSUMSWS_BE altivec_vsumsws_direct {}
-
   const vui __builtin_altivec_vupkhpx (vp);
     VUPKHPX altivec_vupkhpx {}
 
@@ -1163,8 +1067,106 @@
     STVRXL altivec_stvrxl {stvec}
 
 
+; AltiVec integer multiply builtins: vmul[eo][su][bh], the integer vmsum*,
+; vmhaddshs, vmhraddshs and vmladduhm.  The Xenon PPE does not implement
+; these instructions (they raise the illegal-instruction interrupt), so they
+; are gated on TARGET_ALTIVEC_INT_MUL, which is TARGET_ALTIVEC except for
+; -mcpu=xenon.  rs6000_invalid_builtin names the instruction.
+[altivec-intmul]
+  vss __builtin_altivec_vmhaddshs (vss, vss, vss);
+    VMHADDSHS altivec_vmhaddshs {}
+
+  vss __builtin_altivec_vmhraddshs (vss, vss, vss);
+    VMHRADDSHS altivec_vmhraddshs {}
+
+  const vss __builtin_altivec_vmladduhm (vss, vss, vss);
+    VMLADDUHM fmav8hi4 {}
+
+  const vsi __builtin_altivec_vmsummbm (vsc, vuc, vsi);
+    VMSUMMBM altivec_vmsummbm {}
+
+  const vsi __builtin_altivec_vmsumshm (vss, vss, vsi);
+    VMSUMSHM altivec_vmsumshm {}
+
+  vsi __builtin_altivec_vmsumshs (vss, vss, vsi);
+    VMSUMSHS altivec_vmsumshs {}
+
+  const vui __builtin_altivec_vmsumubm (vuc, vuc, vui);
+    VMSUMUBM altivec_vmsumubm {}
+
+  const vui __builtin_altivec_vmsumuhm (vus, vus, vui);
+    VMSUMUHM altivec_vmsumuhm {}
+
+  vui __builtin_altivec_vmsumuhs (vus, vus, vui);
+    VMSUMUHS altivec_vmsumuhs {}
+
+  const vss __builtin_altivec_vmulesb (vsc, vsc);
+    VMULESB vec_widen_smult_even_v16qi {}
+
+  const vsi __builtin_altivec_vmulesh (vss, vss);
+    VMULESH vec_widen_smult_even_v8hi {}
+
+  const vus __builtin_altivec_vmuleub (vuc, vuc);
+    VMULEUB vec_widen_umult_even_v16qi {}
+
+  const vui __builtin_altivec_vmuleuh (vus, vus);
+    VMULEUH vec_widen_umult_even_v8hi {}
+
+  const vss __builtin_altivec_vmulosb (vsc, vsc);
+    VMULOSB vec_widen_smult_odd_v16qi {}
+
+  const vus __builtin_altivec_vmuloub (vuc, vuc);
+    VMULOUB vec_widen_umult_odd_v16qi {}
+
+  const vsi __builtin_altivec_vmulosh (vss, vss);
+    VMULOSH vec_widen_smult_odd_v8hi {}
+
+  const vui __builtin_altivec_vmulouh (vus, vus);
+    VMULOUH vec_widen_umult_odd_v8hi {}
+
+; AltiVec sum-across builtins: vsum4ubs, vsum4sbs, vsum4shs, vsum2sws and
+; vsumsws.  Not implemented on Xenon either; gated on TARGET_ALTIVEC_VSUM.
+[altivec-vsum]
+  const vsi __builtin_altivec_vsum2sws (vsi, vsi);
+    VSUM2SWS altivec_vsum2sws {}
+
+  const vsi __builtin_altivec_vsum4sbs (vsc, vsi);
+    VSUM4SBS altivec_vsum4sbs {}
+
+  const vsi __builtin_altivec_vsum4shs (vss, vsi);
+    VSUM4SHS altivec_vsum4shs {}
+
+  const vui __builtin_altivec_vsum4ubs (vuc, vui);
+    VSUM4UBS altivec_vsum4ubs {}
+
+  const vsi __builtin_altivec_vsumsws (vsi, vsi);
+    VSUMSWS altivec_vsumsws {}
+
+  const vsi __builtin_altivec_vsumsws_be (vsi, vsi);
+    VSUMSWS_BE altivec_vsumsws_direct {}
+
+
 ; VSX builtins.
 [vsx]
+; V1TImode is a vector mode only with VSX (rs6000_vector_mem), so the
+; vector __int128 forms of vperm, vsel and vsldoi live here: in [altivec]
+; a non-VSX AltiVec CPU (Cell, Xenon, 970) accepted them and then ICEd in
+; copy_to_mode_reg.
+  const vsq __builtin_altivec_vperm_1ti (vsq, vsq, vuc);
+    VPERM_1TI altivec_vperm_v1ti {}
+
+  const vuq __builtin_altivec_vperm_1ti_uns (vuq, vuq, vuc);
+    VPERM_1TI_UNS altivec_vperm_v1ti_uns {}
+
+  const vsq __builtin_altivec_vsel_1ti (vsq, vsq, vuq);
+    VSEL_1TI vector_select_v1ti {}
+
+  const vuq __builtin_altivec_vsel_1ti_uns (vuq, vuq, vuq);
+    VSEL_1TI_UNS vector_select_v1ti_uns {}
+
+  const vsq __builtin_altivec_vsldoi_v1ti (vsq, vsq, const int<4>);
+    VSLDOI_1TI altivec_vsldoi_v1ti {}
+
   pure vd __builtin_altivec_lvx_v2df (signed long, const void *);
     LVX_V2DF altivec_lvx_v2df {ldvec}
 
@@ -1872,6 +1874,22 @@
 
 ; Power8 vector built-ins.
 [power8-vector]
+; vmulesw/vmuleuw/vmulosw/vmulouw are ISA 2.07 (POWER8) instructions and
+; their expanders (vec_widen_[su]mult_{even,odd}_v4si) require
+; TARGET_P8_VECTOR, so they belong here rather than in [altivec], where a
+; pre-POWER8 AltiVec CPU accepted them and then ICEd at expansion.
+  const vsll __builtin_altivec_vmulesw (vsi, vsi);
+    VMULESW vec_widen_smult_even_v4si {}
+
+  const vull __builtin_altivec_vmuleuw (vui, vui);
+    VMULEUW vec_widen_umult_even_v4si {}
+
+  const vsll __builtin_altivec_vmulosw (vsi, vsi);
+    VMULOSW vec_widen_smult_odd_v4si {}
+
+  const vull __builtin_altivec_vmulouw (vui, vui);
+    VMULOUW vec_widen_umult_odd_v4si {}
+
   const vsll __builtin_altivec_abs_v2di (vsll);
     ABS_V2DI absv2di2 {}
 
@@ -4313,3 +4331,73 @@
   dmr1024 __builtin_mma_pmdmxvf16gerx2nn_internal (dmr1024, v256, vuc, const int<8>, \
 						 const int<4>, const int<2>);
     PMDMXVF16GERX2NN_INTERNAL dmf_pmdmxvf16gerx2nn {dm,pair}
+
+
+; Xbox 360 Xenon VMX128-only operations (XENON_TARGET_PLAN 4.2, D7): the
+; VMX128 instructions that have no AltiVec equivalent, named
+; __builtin_xenon_<mnemonic without "128">.  Enabled by -mvmx128
+; (TARGET_VMX128: -mcpu=xenon with AltiVec, unless -mno-vmx128);
+; rs6000_invalid_builtin says which option is missing.  The patterns are in
+; xenon-vmx.md; they are UNSPECs, so each builtin emits exactly its
+; instruction and nothing else (the vectorizer cannot reach vmsum3fp128 /
+; vmsum4fp128, which are not IEEE operations).  Operand semantics are from
+; isa/xenon_isa.json and isa/FINDINGS.md 1.3.  The immediates must be
+; literals; their ranges are the instruction fields restricted to the
+; values with a defined meaning:
+;   vrlimi128   UIMM: lane mask 0-15 (bit 3 = word 0 .. bit 0 = word 3; the
+;               field's bit 4 has no defined meaning), VD3D2: rotate 0-3
+;   vpermwi128  VPERM128: 0-255 (two bits per result word, word 0 first)
+;   vpkd3d128   VD3D0: D3D type 0-6, VD3D1: pack size 1-3 (1 = 32-bit,
+;               2/3 = the two 64-bit forms), VD3D2: word slot 0-3
+;   vupkd3d128  the D3D type 0-6, encoded as UIMM = type << 2
+; The overloaded user-level names (__builtin_xenon_vrlimi, _vpermwi,
+; _vpkd3d, _vupkd3d) are in rs6000-overload.def.  Documented in
+; doc/extend.texi ("Xbox 360 Xenon VMX128 Built-in Functions") and
+; config/rs6000/xenon_vmx.h.
+[xenon-vmx128]
+; D.xyzw = A.x*B.x + A.y*B.y + A.z*B.z (not IEEE: FINDINGS 1.3)
+  const vf __builtin_xenon_vmsum3fp (vf, vf);
+    XENON_VMSUM3FP xenon_vmsum3fp128 {}
+
+; D.xyzw = A.x*B.x + A.y*B.y + A.z*B.z + A.w*B.w (not IEEE)
+  const vf __builtin_xenon_vmsum4fp (vf, vf);
+    XENON_VMSUM4FP xenon_vmsum4fp128 {}
+
+; (A, D, B) -> A*D + B, fused, one RNE rounding; D is the tied register
+; (vmaddcfp128 vD,vA,vD,vB).
+  const vf __builtin_xenon_vmaddcfp (vf, vf, vf);
+    XENON_VMADDCFP xenon_vmaddcfp128 {}
+
+; A*B rounded (vmulfp128), never folded or contracted.
+  const vf __builtin_xenon_vmulfp (vf, vf);
+    XENON_VMULFP xenon_vmulfp128_exact {}
+
+; (D, B, mask, rot): word i = rotl_words (B, rot)[i] if mask bit (3-i) is
+; set, else D[i]; D is the tied register.
+  const vf __builtin_xenon_vrlimi_v4sf (vf, vf, const int<4>, const int<2>);
+    XENON_VRLIMI_V4SF xenon_vrlimi128_v4sf {}
+
+  const vsi __builtin_xenon_vrlimi_v4si (vsi, vsi, const int<4>, const int<2>);
+    XENON_VRLIMI_V4SI xenon_vrlimi128_v4si {}
+
+; (B, perm): word i = B[(perm >> (6 - 2*i)) & 3].
+  const vf __builtin_xenon_vpermwi_v4sf (vf, const int<8>);
+    XENON_VPERMWI_V4SF xenon_vpermwi128_v4sf {}
+
+  const vsi __builtin_xenon_vpermwi_v4si (vsi, const int<8>);
+    XENON_VPERMWI_V4SI xenon_vpermwi128_v4si {}
+
+; (D, B, type, pack, slot): pack the floats of B as D3D type TYPE (pack
+; size PACK) into word slot SLOT of D, keeping D's other words; D is the
+; tied register.  Sets VSCR[SAT] when a value is clamped.
+  const vf __builtin_xenon_vpkd3d_v4sf (vf, vf, const int<0,6>, \
+					const int<1,3>, const int<2>);
+    XENON_VPKD3D_V4SF xenon_vpkd3d128_v4sf {}
+
+  const vsi __builtin_xenon_vpkd3d_v4si (vsi, vf, const int<0,6>, \
+					 const int<1,3>, const int<2>);
+    XENON_VPKD3D_V4SI xenon_vpkd3d128_v4si {}
+
+; (B, type): unpack B as D3D type TYPE into four floats.
+  const vf __builtin_xenon_vupkd3d_v4si (vsi, const int<0,6>);
+    XENON_VUPKD3D xenon_vupkd3d128 {}

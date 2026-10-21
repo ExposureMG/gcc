@@ -1403,7 +1403,8 @@ See RS/6000 and PowerPC Options.
 -mgnu-attribute
 -mstack-protector-guard=@var{guard}  -mstack-protector-guard-reg=@var{reg}
 -mstack-protector-guard-offset=@var{offset}  -mprefixed
--mpcrel  -mmma  -mdense-math  -mrop-protect  -mprivileged
+-mpcrel  -mmma  -mdense-math  -mvmx128  -mxenon-smt=@var{mode}  -Wno-xenon-smt
+-mrop-protect  -mprivileged
 -mno-splat-word-constant  -mno-splat-float-constant
 -mno-ieee128-constant  -mno-warn-altivec-long}
 
@@ -31588,7 +31589,23 @@ Supported values for @var{cpu_type} are @samp{401}, @samp{403},
 @samp{titan}, @samp{power3}, @samp{power4}, @samp{power5}, @samp{power5+},
 @samp{power6}, @samp{power6x}, @samp{power7}, @samp{power8},
 @samp{power9}, @samp{power10}, @samp{power11}, @samp{future}, @samp{powerpc},
-@samp{powerpc64}, @samp{powerpc64le}, @samp{rs64}, and @samp{native}.
+@samp{powerpc64}, @samp{powerpc64le}, @samp{rs64}, @samp{xenon},
+and @samp{native}.
+
+@option{-mcpu=xenon} selects the Xbox 360 Xenon PPE: 64-bit PowerPC with
+AltiVec and the VMX128 extension, and only the instructions the Xenon
+hardware implements.  It defines @code{_ARCH_XENON}, @code{__XENON__} and,
+when AltiVec and @option{-mvmx128} are enabled, @code{__VMX128__}, and passes
+@option{-mxenon} to the assembler.
+
+When tuning for Xenon (@option{-mtune=xenon}, the default for
+@option{-mcpu=xenon}), @option{-O2} vectorizes with
+@option{-fvect-cost-model=cheap} instead of @samp{very-cheap}: every
+transfer between the vector and the integer or floating-point registers
+goes through memory on Xenon (about 40 cycles), so the one-time splat of
+a loop invariant or the final extract of a reduction would exceed what
+the @samp{very-cheap} model allows for any trip count.  @option{-Os} and
+an explicit @option{-fvect-cost-model} are not affected.
 
 @option{-mcpu=powerpc}, @option{-mcpu=powerpc64}, and
 @option{-mcpu=powerpc64le} specify pure 32-bit PowerPC (either
@@ -32712,6 +32729,86 @@ the option @option{-mcpu=power10} (or later) is enabled.
 Generate (do not generate) the MMA instructions.  The @option{-mma}
 option requires that the option @option{-mcpu=power10} (or later)
 is enabled.
+
+@opindex mvmx128
+@opindex mno-vmx128
+@item -mvmx128
+@itemx -mno-vmx128
+Use (do not use) the Xbox 360 Xenon VMX128 vector registers
+@code{v32}@dots{}@code{v127}.  @option{-mvmx128} is the default for
+@option{-mcpu=xenon} with AltiVec, and requires both.  The registers
+@code{v32}@dots{}@code{v63} are call-clobbered and
+@code{v64}@dots{}@code{v127} are call-saved.  With @option{-mvmx128} the
+compiler also uses the VMX128 instructions: the VMX128 form of an
+AltiVec instruction when one of its registers is @code{v32} or above,
+@code{vmaddfp128}, @code{vmaddcfp128} and @code{vnmsubfp128} for fused
+multiply-add, @code{vsel128}, @code{vperm128}, @code{vmulfp128} for
+vector float multiplication, and @code{lvlx}/@code{lvrx} and
+@code{stvlx}/@code{stvrx} for misaligned vector loads and stores.  With
+@option{-mno-vmx128} the compiler only uses @code{v0}@dots{}@code{v31}
+and the AltiVec instructions.  The estimate instructions
+(@code{vrefp}, @code{vrsqrtefp}, @code{vexptefp}, @code{vlogefp}) are
+always emitted in their AltiVec forms, so that an estimate does not
+depend on register allocation.
+The VMX128 instructions without an AltiVec equivalent
+(@code{vmsum3fp128}, @code{vmsum4fp128}, @code{vrlimi128},
+@code{vpermwi128}, @code{vpkd3d128}, @code{vupkd3d128}) are only
+available through the @code{__builtin_xenon_*} functions and
+@file{xenon_vmx.h} (@pxref{PowerPC Xenon VMX128 Built-in Functions}).
+
+@option{-ffixed-v@var{n}} and @option{-fcall-used-v@var{n}} work for
+@code{v32}@dots{}@code{v127}; @option{-fcall-saved-v@var{n}} is an error
+for @code{v32}@dots{}@code{v63}, which no prologue saves.
+
+Misaligned accesses use @code{lvlx}/@code{lvrx} and
+@code{stvlx}/@code{stvrx} only for a vector type whose alignment is
+below 16 bytes.  Such a type is declared with @code{vector_size}, as in
+@code{typedef float v4sf_u __attribute__ ((vector_size (16),
+aligned (4)));}, or as a typedef of an existing vector typedef, as in
+@code{typedef v4sf v4sf_u __attribute__ ((aligned (4)));} (also when
+@code{v4sf} was declared with @code{__vector}).  The attribute has no
+effect on a typedef that uses the AltiVec keyword itself:
+@code{typedef __vector float T __attribute__ ((aligned (4)));} keeps
+16-byte alignment, as for every AltiVec CPU, and a dereference of a
+misaligned pointer to such a type uses @code{lvx128}/@code{stvx128},
+which ignore the low four address bits.
+
+@opindex mxenon-smt
+@item -mxenon-smt=@var{mode}
+When tuning for the Xbox 360 Xenon (@option{-mtune=xenon}, the default
+for @option{-mcpu=xenon}), describe what the other hardware thread of
+the core does while the compiled code runs.  @var{mode} is
+@samp{idle} (the default: the sibling thread is parked or waits at low
+priority), @samp{busy} (the sibling runs a throughput-bound kernel: the
+two threads alternate issue cycles, so this thread's throughput halves
+while its latencies stay, except that integer additions take about 2.4
+cycles instead of 2) or @samp{same} (the sibling runs the same code:
+throughput about 2.3 times lower, latencies about 1.27 times longer).
+@samp{busy} and @samp{same} change the instruction scheduler's model,
+halve the loop unrolling factors (the sibling thread hides latencies) and
+make the vectorizer charge latency-bound transfers between register
+files less against throughput-bound work.  The option does not change
+the instructions that may be used.  In the scheduler model @samp{same}
+differs from @samp{busy} only in the unit occupancy (about 2.3 instead of
+1.9 times) and in the latencies: the sibling owns one issue cycle after
+each of this thread's in both modes, so independent integer and mixed
+integer/floating-point code is modelled about 1.9 times slower under
+@samp{same} as well, against the 2.28 measured.
+
+The option is global: it cannot be set with @code{#pragma GCC target} or
+the @code{target} attribute, and with @option{-flto} it has to be given
+at link time too.  It affects every function tuned for Xenon, including
+a function that a @code{target} attribute or pragma tunes for Xenon in a
+unit compiled for another processor; code tuned for any other processor
+is unchanged.  When the command line does not tune for Xenon, the
+compiler warns that the option affects only code tuned for Xenon
+(@option{-Wno-xenon-smt} turns the warning off).
+
+@opindex Wxenon-smt
+@opindex Wno-xenon-smt
+@item -Wno-xenon-smt
+Do not warn when @option{-mxenon-smt=} is given and the command line
+does not tune for Xenon.
 
 @opindex mdense-math
 @opindex mno-dense-math

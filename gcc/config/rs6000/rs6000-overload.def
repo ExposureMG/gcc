@@ -6328,3 +6328,52 @@
     VUPKLSW  VUPKLSW_DEPR1
   vbll __builtin_vec_vupklsw (vbi);
     VUPKLSW  VUPKLSW_DEPR2
+
+; Xbox 360 Xenon VMX128-only operations (rs6000-builtins.def stanza
+; [xenon-vmx128]).  No vec_* name: these are called by their
+; __builtin_xenon_* names (or through xenon_vmx.h).  The word-granular
+; operations accept every 4 x 32-bit vector type; vupkd3d accepts any
+; 128-bit vector holding packed data.
+[XENON_VRLIMI, SKIP, __builtin_xenon_vrlimi]
+  vf __builtin_xenon_vrlimi (vf, vf, const int, const int);
+    XENON_VRLIMI_V4SF
+  vsi __builtin_xenon_vrlimi (vsi, vsi, const int, const int);
+    XENON_VRLIMI_V4SI  XENON_VRLIMI_VSI
+  vui __builtin_xenon_vrlimi (vui, vui, const int, const int);
+    XENON_VRLIMI_V4SI  XENON_VRLIMI_VUI
+  vbi __builtin_xenon_vrlimi (vbi, vbi, const int, const int);
+    XENON_VRLIMI_V4SI  XENON_VRLIMI_VBI
+
+[XENON_VPERMWI, SKIP, __builtin_xenon_vpermwi]
+  vf __builtin_xenon_vpermwi (vf, const int);
+    XENON_VPERMWI_V4SF
+  vsi __builtin_xenon_vpermwi (vsi, const int);
+    XENON_VPERMWI_V4SI  XENON_VPERMWI_VSI
+  vui __builtin_xenon_vpermwi (vui, const int);
+    XENON_VPERMWI_V4SI  XENON_VPERMWI_VUI
+  vbi __builtin_xenon_vpermwi (vbi, const int);
+    XENON_VPERMWI_V4SI  XENON_VPERMWI_VBI
+
+[XENON_VPKD3D, SKIP, __builtin_xenon_vpkd3d]
+  vf __builtin_xenon_vpkd3d (vf, vf, const int, const int, const int);
+    XENON_VPKD3D_V4SF
+  vsi __builtin_xenon_vpkd3d (vsi, vf, const int, const int, const int);
+    XENON_VPKD3D_V4SI  XENON_VPKD3D_VSI
+  vui __builtin_xenon_vpkd3d (vui, vf, const int, const int, const int);
+    XENON_VPKD3D_V4SI  XENON_VPKD3D_VUI
+
+[XENON_VUPKD3D, SKIP, __builtin_xenon_vupkd3d]
+  vf __builtin_xenon_vupkd3d (vf, const int);
+    XENON_VUPKD3D  XENON_VUPKD3D_VF
+  vf __builtin_xenon_vupkd3d (vsi, const int);
+    XENON_VUPKD3D  XENON_VUPKD3D_VSI
+  vf __builtin_xenon_vupkd3d (vui, const int);
+    XENON_VUPKD3D  XENON_VUPKD3D_VUI
+  vf __builtin_xenon_vupkd3d (vss, const int);
+    XENON_VUPKD3D  XENON_VUPKD3D_VSS
+  vf __builtin_xenon_vupkd3d (vus, const int);
+    XENON_VUPKD3D  XENON_VUPKD3D_VUS
+  vf __builtin_xenon_vupkd3d (vsc, const int);
+    XENON_VUPKD3D  XENON_VUPKD3D_VSC
+  vf __builtin_xenon_vupkd3d (vuc, const int);
+    XENON_VUPKD3D  XENON_VUPKD3D_VUC
