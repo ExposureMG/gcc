@@ -187,7 +187,7 @@ case $1 in
 					| ultra | tti* | harris | dolphin | highlevel | gould \
 					| cbm | ns | masscomp | apple | axis | knuth | cray \
 					| microblaze* | sim | cisco \
-					| oki | wec | wrs | winbond)
+					| oki | wec | wrs | winbond | xenon)
 						basic_machine=$field1-$field2
 						basic_os=
 						;;
@@ -900,6 +900,13 @@ case $basic_machine in
 		vendor=sde
 		basic_os=${basic_os:-elf}
 		;;
+	# Microsoft Xbox 360 (Xenon) PPE, bare metal.  "xenon" and "xenon-*"
+	# are shorthands for powerpc64-xenon-elf.
+	xenon | xenon-*)
+		cpu=powerpc64
+		vendor=xenon
+		basic_os=${basic_os:-elf}
+		;;
 	simso-wrs)
 		cpu=sparclite
 		vendor=wrs
@@ -1528,6 +1535,9 @@ case $cpu-$vendor in
 		os=elf
 		;;
 	spu-*)
+		os=elf
+		;;
+	*-xenon)
 		os=elf
 		;;
 	*-acorn)

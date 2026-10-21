@@ -18578,6 +18578,7 @@ instructions, but allow the compiler to schedule those calls.
 * Nvidia PTX Built-in Functions::
 * Basic PowerPC Built-in Functions::
 * PowerPC AltiVec/VSX Built-in Functions::
+* PowerPC Xenon VMX128 Built-in Functions::
 * PowerPC Hardware Transactional Memory Built-in Functions::
 * PowerPC Atomic Memory Operation Functions::
 * PowerPC Matrix-Multiply Assist Built-in Functions::
@@ -26922,6 +26923,125 @@ For each integer value @code{i} from 0 to 7, do the following. The integer
 value in halfword element @code{i} of @var{a} is multiplied by the integer
 value in halfword element @code{i} of @var{b}. The high-order 16 bits of the
 32-bit product are placed into halfword element @code{i} of the vector returned.
+
+@node PowerPC Xenon VMX128 Built-in Functions
+@subsection PowerPC Xenon VMX128 Built-in Functions
+@cindex Xenon VMX128 built-in functions
+@cindex VMX128 built-in functions
+
+The Xbox 360 Xenon processor (@option{-mcpu=xenon}) extends AltiVec with
+VMX128: 128 vector registers and instruction forms that can name all of
+them.  GCC uses the VMX128 forms of the AltiVec operations automatically
+(@pxref{RS/6000 and PowerPC Options}, @option{-mvmx128}).  The operations
+below have no AltiVec equivalent and are only available through these
+built-in functions.  They require @option{-mvmx128}, which is on by
+default with @option{-mcpu=xenon} and AltiVec; otherwise each call is an
+error that names the missing option.  Each call emits exactly the one
+instruction named; the compiler does not fold, combine or vectorize them.
+
+Vector elements are numbered from 0 (the leftmost, lowest-addressed word,
+also called @var{x}) to 3 (@var{w}).  The arguments shown as
+@code{const int} must be integer constant expressions in the range given,
+which is checked at compile time.  The @code{vector float}, @code{vector
+signed int} and @code{vector unsigned int} arguments of the word-granular
+operations can be of any of those types (@code{__builtin_xenon_vrlimi} and
+@code{__builtin_xenon_vpermwi} also accept @code{vector bool int}); the
+result has the type of the first vector argument.
+
+The @file{xenon_vmx.h} header (installed for the
+@code{powerpc64-xenon-elf} target) provides shorter names, macros for the
+immediates and the D3D type constants.  A unit compiled for another
+processor can include it as well; its functions are then compiled for
+Xenon (as with @code{#pragma GCC target ("cpu=xenon")}), so they can be
+used in functions marked @code{__attribute__ ((target ("cpu=xenon")))}
+and are an error (the inlining fails) anywhere else.
+
+@smallexample
+vector float __builtin_xenon_vmsum3fp (vector float @var{a}, vector float @var{b});
+vector float __builtin_xenon_vmsum4fp (vector float @var{a}, vector float @var{b});
+@end smallexample
+@findex __builtin_xenon_vmsum3fp
+@findex __builtin_xenon_vmsum4fp
+Dot products (@code{vmsum3fp128}, @code{vmsum4fp128}): every element of
+the result is @code{@var{a}[0]*@var{b}[0] + @var{a}[1]*@var{b}[1] +
+@var{a}[2]*@var{b}[2]}, plus @code{@var{a}[3]*@var{b}[3]} for
+@code{vmsum4fp}.  These are not IEEE operations: the exact products are
+truncated to a common accumulator, summed in one's complement and the
+result is truncated to single precision, so its magnitude can be slightly
+below the correctly rounded value; a NaN, @code{inf*0} or @code{inf-inf}
+gives the default NaN @code{0x7FC00000} and an overflow gives a NaN, never
+an infinity.  For an IEEE dot product use @code{vec_madd} and permutes.
+
+@smallexample
+vector float __builtin_xenon_vmaddcfp (vector float @var{a}, vector float @var{d},
+                                       vector float @var{b});
+@end smallexample
+@findex __builtin_xenon_vmaddcfp
+Returns @code{@var{a}*@var{d} + @var{b}}, fused (one round-to-nearest-even
+rounding), with @code{vmaddcfp128 vD,vA,vD,vB}: @var{d} is passed in the
+destination register, which the instruction overwrites (the compiler copies
+@var{d} first if its value is still needed).  @code{vec_madd} computes the
+same value and lets the compiler choose among @code{vmaddfp},
+@code{vmaddfp128} and @code{vmaddcfp128}.
+
+@smallexample
+vector float __builtin_xenon_vmulfp (vector float @var{a}, vector float @var{b});
+@end smallexample
+@findex __builtin_xenon_vmulfp
+Returns the rounded product @code{@var{a}*@var{b}} with
+@code{vmulfp128}.  Unlike the @code{*} operator, which also uses
+@code{vmulfp128}, the call is never contracted into a multiply-add.
+
+@smallexample
+vector float __builtin_xenon_vrlimi (vector float @var{d}, vector float @var{b},
+                                     const int @var{mask}, const int @var{rot});
+@end smallexample
+@findex __builtin_xenon_vrlimi
+Rotate and insert (@code{vrlimi128 vD,vB,@var{mask},@var{rot}}): element
+@var{i} of the result is element @code{(@var{i} + @var{rot}) & 3} of
+@var{b} (@var{b} rotated left by @var{rot} words) if bit @code{3 -
+@var{i}} of @var{mask} is set, else element @var{i} of @var{d}.
+@var{mask} is 0 to 15 (8 selects element 0, 1 element 3), @var{rot} 0 to
+3.  @var{d} is passed in the destination register.
+
+@smallexample
+vector float __builtin_xenon_vpermwi (vector float @var{b}, const int @var{perm});
+@end smallexample
+@findex __builtin_xenon_vpermwi
+Word permute (@code{vpermwi128}): element @var{i} of the result is element
+@code{(@var{perm} >> (6 - 2*@var{i})) & 3} of @var{b}; @var{perm} is 0 to
+255.  For example, @var{perm} @code{0x1B} is the identity and
+@code{0xE4} reverses the elements.
+
+@smallexample
+vector float __builtin_xenon_vpkd3d (vector float @var{d}, vector float @var{b},
+                                     const int @var{type}, const int @var{pack},
+                                     const int @var{slot});
+vector float __builtin_xenon_vupkd3d (vector unsigned int @var{b},
+                                      const int @var{type});
+@end smallexample
+@findex __builtin_xenon_vpkd3d
+@findex __builtin_xenon_vupkd3d
+Direct3D data packing (@code{vpkd3d128 vD,vB,@var{type},@var{pack},@var{slot}})
+and unpacking (@code{vupkd3d128 vD,vB,@var{type}<<2}).
+@code{__builtin_xenon_vpkd3d} converts the floats of @var{b} to D3D type
+@var{type} with pack size @var{pack} (1 for a 32-bit result, 2 and 3 for
+the two halves of a 64-bit one) and merges the result into @var{d}, which
+is passed in the destination register; the instruction sets
+@code{VSCR[SAT]} when it clamps a value.  @var{slot} (0 to 3) is the
+value of the instruction's @code{VD3D2} field, which selects where in
+@var{d} the result goes.  The element that a given @var{slot} selects,
+the direction in which the slots are counted, and where the two words of
+a 64-bit result go have not been verified on hardware, so code should
+not depend on a particular mapping yet.  @code{__builtin_xenon_vupkd3d}
+unpacks @var{b} (which can be of any non-bool vector type) as D3D type
+@var{type} into four floats.  @var{type} is 0 to 6: 0 @code{D3DCOLOR},
+1 @code{NORMSHORT2}, 2 @code{NORMPACKED32} (2_10_10_10), 3
+@code{FLOAT16_2}, 4 @code{NORMSHORT4}, 5 @code{FLOAT16_4}, 6
+@code{NORMPACKED64} (4_20_20_20).  The integer formats are represented as
+floats biased by 3.0 (the integer code is the float's bit pattern minus
+@code{0x40400000}); @code{FLOAT16} is the Xenos half-precision format,
+which saturates instead of producing infinities or NaNs.
 
 @node PowerPC Hardware Transactional Memory Built-in Functions
 @subsection PowerPC Hardware Transactional Memory Built-in Functions

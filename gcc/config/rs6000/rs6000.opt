@@ -619,6 +619,31 @@ mmma
 Target Mask(MMA) Var(rs6000_isa_flags)
 Generate (do not generate) MMA instructions.
 
+mvmx128
+Target Mask(VMX128) Var(rs6000_isa_flags)
+Use (do not use) the Xenon VMX128 vector registers v32-v127 (-mcpu=xenon with -maltivec).
+
+mxenon-smt=
+Target RejectNegative Joined Enum(rs6000_xenon_smt) Var(rs6000_xenon_smt) Init(XENON_SMT_MODE_IDLE)
+-mxenon-smt=[idle,busy,same]	When tuning for Xenon, assume the sibling hardware thread is idle, busy, or running the same code.
+
+Wxenon-smt
+Target Var(rs6000_warn_xenon_smt) Init(1) Warning
+Warn when -mxenon-smt= is given and the command line does not tune for Xenon.
+
+Enum
+Name(rs6000_xenon_smt) Type(enum rs6000_xenon_smt_mode)
+Valid arguments to %<-mxenon-smt=%>:
+
+EnumValue
+Enum(rs6000_xenon_smt) String(idle) Value(XENON_SMT_MODE_IDLE)
+
+EnumValue
+Enum(rs6000_xenon_smt) String(busy) Value(XENON_SMT_MODE_BUSY)
+
+EnumValue
+Enum(rs6000_xenon_smt) String(same) Value(XENON_SMT_MODE_SAME)
+
 mrelative-jumptables
 Target Undocumented Var(rs6000_relative_jumptables) Init(1) Save
 
@@ -697,3 +722,11 @@ default value is 4.
 Target Undocumented Joined UInteger Var(rs6000_vect_unroll_reduc_threshold) Init(1) Param
 When reduction factor computed for a loop exceeds the threshold specified by
 this parameter, prefer to unroll this loop.  The default value is 1.
+
+-param=xenon-vmx128-ool-threshold=
+Target Undocumented Joined UInteger Var(rs6000_xenon_vmx128_ool_threshold) Init(16) IntegerRange(0, 64) Param
+Xenon VMX128 (-mvmx128): in a function optimized for speed, the number of
+callee-saved registers v64-v127 to save from which the prologue and epilogue
+call the out-of-line routines _savevr128_N and _restvr128_N instead of
+saving and restoring inline; 0 means always inline.  Functions optimized for
+size use the routines from two registers on.  The default value is 16.

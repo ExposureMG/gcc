@@ -117,6 +117,7 @@
   mcpu=powerpc64: -mppc64; \
   mcpu=a2: -ma2; \
   mcpu=cell: -mcell; \
+  mcpu=xenon: -mxenon; \
   mcpu=rs64: -mppc64; \
   mcpu=401: -mppc; \
   mcpu=403: -m403; \
@@ -443,7 +444,38 @@ extern int rs6000_vector_align[];
 #define TARGET_LONG_DOUBLE_128 (rs6000_long_double_type_size > 64)
 #define TARGET_IEEEQUAD rs6000_ieeequad
 #define TARGET_ALTIVEC_ABI rs6000_altivec_abi
-#define TARGET_LDBRX (TARGET_POPCNTD || rs6000_cpu == PROCESSOR_CELL)
+/* ldbrx/stdbrx: ISA 2.06, plus Cell and the Xenon PPE, which both execute
+   them (Xenon: isa/findings_instructions.csv lists ldbrx and stdbrx).  */
+#define TARGET_LDBRX (TARGET_POPCNTD || rs6000_cpu == PROCESSOR_CELL	\
+		      || rs6000_cpu == PROCESSOR_XENON)
+
+/* The Xbox 360 Xenon PPE (-mcpu=xenon).  Its legacy AltiVec unit does not
+   implement the integer multiply family (vmul[eo][su][bh], the integer
+   vmsum*, vmhaddshs, vmhraddshs, vmladduhm) nor the sum-across family
+   (vsum4ubs, vsum4sbs, vsum4shs, vsum2sws, vsumsws): all of them raise the
+   illegal-instruction interrupt (isa/FINDINGS.md 1.3).  The patterns for
+   them are conditional on these two macros, their callers either FAIL,
+   are disabled or use a replacement sequence, and the builtins give an
+   error (rs6000_invalid_builtin).  */
+#define TARGET_XENON_CPU	(rs6000_cpu == PROCESSOR_XENON)
+#define TARGET_ALTIVEC_INT_MUL	(TARGET_ALTIVEC && !TARGET_XENON_CPU)
+#define TARGET_ALTIVEC_VSUM	(TARGET_ALTIVEC && !TARGET_XENON_CPU)
+
+/* Whether the Xenon replacement sequences for the AltiVec integer
+   multiplies (mulv4si3, mulv8hi3, mulv16qi3 and the widening hi/lo
+   multiplies in altivec.md) can be used.  They do the multiplication in
+   single precision (vcfsx/vcfux, vmaddfp, vctsxs/vctuxs) on pieces small
+   enough that every product is exact, and recombine with integer adds and
+   shifts.  */
+#define TARGET_XENON_VMUL_SEQ	(TARGET_ALTIVEC && !TARGET_ALTIVEC_INT_MUL \
+				 && VECTOR_UNIT_ALTIVEC_P (V4SFmode))
+
+/* The Cell vector load/store left/right instructions lvlx, lvlxl, lvrx,
+   lvrxl, stvlx, stvlxl, stvrx and stvrxl exist on the Cell PPU and on the
+   Xenon PPE (which also has their 128 forms).  */
+#define TARGET_CELL_VEC_LDST	(TARGET_ALTIVEC				\
+				 && (rs6000_cpu == PROCESSOR_CELL	\
+				     || rs6000_cpu == PROCESSOR_XENON))
 
 /* ISA 2.01 allowed FCFID to be done in 32-bit, previously it was 64-bit only.
    Enable 32-bit fcfid's on any of the switches for newer ISA machines.  */
@@ -596,6 +628,7 @@ extern unsigned char rs6000_recip_bits[];
   targetm.target_option.pragma_parse = rs6000_pragma_target_parse; \
   targetm.resolve_overloaded_builtin = altivec_resolve_overloaded_builtin; \
   rs6000_target_modify_macros_ptr = rs6000_target_modify_macros; \
+  rs6000_target_modify_cpu_macros_ptr = rs6000_target_modify_cpu_macros; \
 } while (0)
 
 /* Target #defines.  */
@@ -771,9 +804,25 @@ enum data_align { align_abi, align_opt, align_both };
    in inline functions.
 
    Another pseudo (not included in DWARF_FRAME_REGISTERS) is soft frame
-   pointer, which is eventually eliminated in favor of SP or FP.  */
+   pointer, which is eventually eliminated in favor of SP or FP.
 
-#define FIRST_PSEUDO_REGISTER 119
+   The Xbox 360 Xenon PPE (VMX128) has 96 more vector registers, v32-v127.
+   They are hard registers FIRST_VMX128_HI_REGNO (119) to
+   LAST_VMX128_HI_REGNO (214), after the DMRs, so that every older register
+   keeps its number (and its .eh_frame / debug number).  They are fixed and
+   in no register class unless TARGET_VMX128 (-mcpu=xenon with AltiVec, see
+   rs6000_conditional_register_usage).  */
+
+#define FIRST_PSEUDO_REGISTER 215
+
+/* The unwinder's register columns.  This is the value FIRST_PSEUDO_REGISTER
+   had before the VMX128 registers were added, so the libgcc unwinder
+   (_Unwind_Context, the register size table) is unchanged for every target.
+   The .eh_frame numbers of v32-v127 (120-215, rs6000_debugger_regno) are
+   outside it: a target that saves v64-v127 in its prologues and wants them
+   restored during unwinding must raise this (plan 4.3); rs6000/xenon64.h
+   (powerpc64-xenon-elf, powerpc64-*-elf) raises it to 216.  */
+#define DWARF_FRAME_REGISTERS 119
 
 /* Use standard DWARF numbering for DWARF debugging information.  */
 #define DEBUGGER_REGNO(REGNO) rs6000_debugger_regno ((REGNO), 0)
@@ -786,6 +835,16 @@ enum data_align { align_abi, align_opt, align_both };
    .debug_frame and .eh_frame.  */
 #define DWARF2_FRAME_REG_OUT(REGNO, FOR_EH) \
   rs6000_debugger_regno ((REGNO), (FOR_EH) ? 2 : 1)
+
+/* Initializer for the 96 VMX128 registers v32-v127 in the per-register
+   tables: LO for v32-v63, HI for v64-v127.  */
+#define VMX128_HI_REGS_INIT_8(X) X, X, X, X, X, X, X, X
+#define VMX128_HI_REGS_INIT_32(X) \
+  VMX128_HI_REGS_INIT_8 (X), VMX128_HI_REGS_INIT_8 (X), \
+  VMX128_HI_REGS_INIT_8 (X), VMX128_HI_REGS_INIT_8 (X)
+#define VMX128_HI_REGS_INIT(LO, HI) \
+  VMX128_HI_REGS_INIT_32 (LO), VMX128_HI_REGS_INIT_32 (HI), \
+  VMX128_HI_REGS_INIT_32 (HI)
 
 /* 1 for registers that have pervasive standard uses
    and are not available for the register allocator.
@@ -812,7 +871,10 @@ enum data_align { align_abi, align_opt, align_both };
    /* vrsave vscr sfp */			   \
    1, 1, 1,					   \
    /* DMRs */					   \
-   0, 0, 0, 0, 0, 0, 0, 0			   \
+   0, 0, 0, 0, 0, 0, 0, 0,			   \
+   /* VMX128 v32-v127: rs6000_conditional_register_usage fixes them \
+      unless TARGET_VMX128 (0 here so that -ffixed-vN survives) */ \
+   VMX128_HI_REGS_INIT (0, 0)			   \
 }
 
 /* Like `CALL_USED_REGISTERS' except this macro doesn't require that
@@ -838,7 +900,9 @@ enum data_align { align_abi, align_opt, align_both };
    /* vrsave vscr sfp */			   \
    0, 0, 0,					   \
    /* DMRs */					   \
-   1, 1, 1, 1, 1, 1, 1, 1			   \
+   1, 1, 1, 1, 1, 1, 1, 1,			   \
+   /* VMX128: v32-v63 volatile, v64-v127 callee-saved (plan 4.3) */ \
+   VMX128_HI_REGS_INIT (1, 0)			   \
 }
 
 #define TOTAL_ALTIVEC_REGS	(LAST_ALTIVEC_REGNO - FIRST_ALTIVEC_REGNO + 1)
@@ -878,7 +942,26 @@ enum data_align { align_abi, align_opt, align_both };
 	dmr0 - dmr7	(not saved)
 	vrsave, vscr	(fixed)
 	sfp		(fixed)
-*/
+
+   With the Xenon VMX128 registers (TARGET_VMX128) the vector part is
+	v32 - v63	(not saved; VMX128 scratch)
+	v0 - v1, v13 - v3, v2, v19 - v14   (as above)
+	v127 - v64	(saved; from the top, so that the saved range
+			 v<first>..v127 is as short as possible)
+	v31 - v20	(saved, as above)
+   The high registers are fixed (so skipped) for every other CPU, which
+   keeps their allocation order unchanged.  Ties between equally cheap
+   registers go to the earlier one, so values that only move through
+   VMX128 instructions (loads, stores, vor128) take v32-v63 first, which
+   leaves v0-v31 to the values that the legacy AltiVec instructions need;
+   those have v0-v31 as their preferred class, so IRA's hard-register
+   costs (the vor128 copy each use of a high register would need) keep
+   them low.  Among the callee-saved registers, which only values living
+   across calls (or under very high pressure) get, v64-v127 come before
+   v20-v31: a value that is used only by VMX128 instructions takes v127
+   down to v64 and leaves v20-v31 to call-crossing values that legacy
+   instructions need; for the latter the copy cost again makes v20-v31
+   cheaper than v64-v127.  */
 
 #if FIXED_R2 == 1
 #define MAYBE_R2_AVAILABLE
@@ -912,17 +995,38 @@ enum data_align { align_abi, align_opt, align_both };
    18, 17, 16, 15, 14, 13, LATE_R12				\
    97, 96,							\
    1, MAYBE_R2_FIXED 99, 98,					\
+   /* VMX128 v32-v63 (fixed unless TARGET_VMX128).  */	\
+   119, 120, 121, 122, 123, 124, 125, 126,			\
+   127, 128, 129, 130, 131, 132, 133, 134,			\
+   135, 136, 137, 138, 139, 140, 141, 142,			\
+   143, 144, 145, 146, 147, 148, 149, 150,			\
    /* AltiVec registers.  */					\
    64, 65,							\
    77, 76, 75, 74, 73, 72, 71, 70, 69, 68, 67,			\
    66,								\
    83, 82, 81, 80, 79, 78,					\
+   /* VMX128 v127-v64 (fixed unless TARGET_VMX128).  */	\
+   214, 213, 212, 211, 210, 209, 208, 207,			\
+   206, 205, 204, 203, 202, 201, 200, 199,			\
+   198, 197, 196, 195, 194, 193, 192, 191,			\
+   190, 189, 188, 187, 186, 185, 184, 183,			\
+   182, 181, 180, 179, 178, 177, 176, 175,			\
+   174, 173, 172, 171, 170, 169, 168, 167,			\
+   166, 165, 164, 163, 162, 161, 160, 159,			\
+   158, 157, 156, 155, 154, 153, 152, 151,			\
    95, 94, 93, 92, 91, 90, 89, 88, 87, 86, 85, 84,		\
    /* DMRs */							\
    111, 112, 113, 114, 115, 116, 117, 118,			\
    108, 109,							\
    110								\
 }
+
+/* With VMX128 the AltiVec block also holds the vperm128 control operands,
+   which must be in v0-v7 (VC128_REGS): take v7-v2 before v13-v8 there, so
+   that a loop-invariant permute mask allocated to ALTIVEC_REGS needs no
+   copy into v0-v7 before each vperm128 (rs6000_adjust_reg_alloc_order).
+   The order is REG_ALLOC_ORDER itself without VMX128.  */
+#define ADJUST_REG_ALLOC_ORDER rs6000_adjust_reg_alloc_order ()
 
 /* True if register is floating-point.  */
 #define FP_REGNO_P(N) ((N) >= 32 && (N) <= 63)
@@ -943,6 +1047,21 @@ enum data_align { align_abi, align_opt, align_both };
 /* True if register is an AltiVec register.  */
 #define ALTIVEC_REGNO_P(N) ((N) >= FIRST_ALTIVEC_REGNO && (N) <= LAST_ALTIVEC_REGNO)
 
+/* Xenon VMX128.  VMX128_HI_REGNO_P: one of v32-v127, the registers that
+   only the VMX128 (*128) instructions can name.  VMX128_REGNO_P: any of
+   v0-v127.  VMX128_REGNUM: the architectural vector register number (0-127)
+   of a register for which VMX128_REGNO_P holds.  */
+#define VMX128_HI_REGNO_P(N) \
+  ((N) >= FIRST_VMX128_HI_REGNO && (N) <= LAST_VMX128_HI_REGNO)
+#define VMX128_REGNO_P(N) (ALTIVEC_REGNO_P (N) || VMX128_HI_REGNO_P (N))
+#define VMX128_REGNUM(N) \
+  (ALTIVEC_REGNO_P (N) ? (N) - FIRST_ALTIVEC_REGNO \
+   : (N) - FIRST_VMX128_HI_REGNO + 32)
+#define TOTAL_VMX128_HI_REGS (LAST_VMX128_HI_REGNO - FIRST_VMX128_HI_REGNO + 1)
+/* The first callee-saved VMX128 register, v64 (plan 4.3: v32-v63 are
+   volatile, v64-v127 callee-saved).  */
+#define FIRST_SAVED_VMX128_REGNO (FIRST_VMX128_HI_REGNO + 32)
+
 /* True if register is a VSX register.  */
 #define VSX_REGNO_P(N) (FP_REGNO_P (N) || ALTIVEC_REGNO_P (N))
 
@@ -952,18 +1071,21 @@ enum data_align { align_abi, align_opt, align_both };
 /* Alternate name for any vector register supporting floating point, no matter
    which instruction set(s) are available.  */
 #define VFLOAT_REGNO_P(N) \
-  (ALTIVEC_REGNO_P (N) || (TARGET_VSX && FP_REGNO_P (N)))
+  (ALTIVEC_REGNO_P (N) || (TARGET_VSX && FP_REGNO_P (N))		\
+   || (TARGET_VMX128 && VMX128_HI_REGNO_P (N)))
 
 /* Alternate name for any vector register supporting integer, no matter which
    instruction set(s) are available.  */
-#define VINT_REGNO_P(N) ALTIVEC_REGNO_P (N)
+#define VINT_REGNO_P(N) \
+  (ALTIVEC_REGNO_P (N) || (TARGET_VMX128 && VMX128_HI_REGNO_P (N)))
 
 /* Alternate name for any vector register supporting logical operations, no
    matter which instruction set(s) are available.  Allow GPRs as well as the
    vector registers.  */
 #define VLOGICAL_REGNO_P(N)						\
   (INT_REGNO_P (N) || ALTIVEC_REGNO_P (N)				\
-   || (TARGET_VSX && FP_REGNO_P (N)))					\
+   || (TARGET_VSX && FP_REGNO_P (N))					\
+   || (TARGET_VMX128 && VMX128_HI_REGNO_P (N)))
 
 /* When setting up caller-save slots (MODE == VOIDmode) ensure we allocate
    enough space to account for vectors in FP regs.  However, TFmode/TDmode
@@ -1009,11 +1131,36 @@ enum data_align { align_abi, align_opt, align_both };
 #define HARD_REGNO_RENAME_OK(SRC, DST) \
   (! ALTIVEC_REGNO_P (DST) || df_regs_ever_live_p (DST))
 
+/* Xbox 360 Xenon tuning numbers: XENON_<NAME>, generated from the hardware
+   findings by tools/gen_xenon_sched.py (xenon-costs.def lists each value with
+   its evidence class and source).  */
+enum rs6000_xenon_param
+{
+#define XENON_PARAM(NAME, VALUE, EVIDENCE, MEASURED, SOURCE) \
+  XENON_##NAME = (VALUE),
+#include "xenon-costs.def"
+#undef XENON_PARAM
+  XENON_PARAM_END
+};
+
+/* A Xenon cycle count as an rtx/insn cost.  COSTS_N_INSNS (1) is one simple
+   ALU op (an add), which takes XENON_COST_UNIT_CYCLES (= LAT_INT, 2) cycles
+   on the PPE, so cycle counts are divided by it; ppccell_cost scales by 1/2
+   for the same reason.  Used by ppcxenon_cost, rs6000_insn_cost,
+   rs6000_rtx_costs and rs6000_max_noce_ifcvt_seq_cost.  */
+#define XENON_COSTS(CYCLES) \
+  (COSTS_N_INSNS (CYCLES) / XENON_COST_UNIT_CYCLES)
+
 /* Specify the cost of a branch insn; roughly the number of extra insns that
    should be added to avoid a branch.
 
    Set this to 3 on the RS/6000 since that is roughly the average cost of an
-   unscheduled conditional branch.  */
+   unscheduled conditional branch.  Xenon keeps 3 as well: BRANCH_COST >= 4
+   makes dojump.cc expand && / || of comparisons as logic on setcc values
+   without consulting insn costs, and an FP setcc there is a 26-cycle
+   microcoded mfcr.  Xenon's branch costs (mispredict ~26 cycles, no isel)
+   go to if-conversion instead, through TARGET_MAX_NOCE_IFCVT_SEQ_COST
+   (rs6000_max_noce_ifcvt_seq_cost), which compares insn costs.  */
 
 #define BRANCH_COST(speed_p, predictable_p) 3
 
@@ -1076,7 +1223,18 @@ enum data_align { align_abi, align_opt, align_both };
    So make a class for registers valid as base registers.
 
    Also, cr0 is the only condition code register that can be used in
-   arithmetic insns, so make a separate class for it.  */
+   arithmetic insns, so make a separate class for it.
+
+   The Xenon VMX128 extension adds three classes (plan 4.1), nested as
+   VC128_REGS (v0-v7: the vperm128 control operand) within ALTIVEC_REGS
+   (v0-v31: every legacy AltiVec instruction) within VMX128_REGS (v0-v127:
+   the operands of the VMX128 instructions); VMX128_HI_REGS is v32-v127
+   (costs, save/restore), and GEN_OR_VMX128_REGS is the union with the GPRs
+   that IRA needs as the counterpart of GEN_OR_VSX_REGS.  Without
+   TARGET_VMX128 all four are emptied by rs6000_conditional_register_usage,
+   so that the register allocator sees exactly the classes it had before
+   (an empty class never wins a subunion/superunion and is no allocno or
+   pressure class).  */
 
 enum reg_class
 {
@@ -1084,13 +1242,17 @@ enum reg_class
   BASE_REGS,
   GENERAL_REGS,
   FLOAT_REGS,
+  VC128_REGS,
   ALTIVEC_REGS,
+  VMX128_HI_REGS,
+  VMX128_REGS,
   VSX_REGS,
   DMR_REGS,
   VRSAVE_REGS,
   VSCR_REGS,
   GEN_OR_FLOAT_REGS,
   GEN_OR_VSX_REGS,
+  GEN_OR_VMX128_REGS,
   LINK_REGS,
   CTR_REGS,
   LINK_OR_CTR_REGS,
@@ -1114,13 +1276,17 @@ enum reg_class
   "BASE_REGS",								\
   "GENERAL_REGS",							\
   "FLOAT_REGS",								\
+  "VC128_REGS",								\
   "ALTIVEC_REGS",							\
+  "VMX128_HI_REGS",							\
+  "VMX128_REGS",							\
   "VSX_REGS",								\
   "DMR_REGS",								\
   "VRSAVE_REGS",							\
   "VSCR_REGS",								\
   "GEN_OR_FLOAT_REGS",							\
   "GEN_OR_VSX_REGS",							\
+  "GEN_OR_VMX128_REGS",							\
   "LINK_REGS",								\
   "CTR_REGS",								\
   "LINK_OR_CTR_REGS",							\
@@ -1140,47 +1306,80 @@ enum reg_class
 #define REG_CLASS_CONTENTS						\
 {									\
   /* NO_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000000 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000000,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* BASE_REGS.  */							\
-  { 0xfffffffe, 0x00000000, 0x00000000, 0x00004008 },			\
+  { 0xfffffffe, 0x00000000, 0x00000000, 0x00004008,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* GENERAL_REGS.  */							\
-  { 0xffffffff, 0x00000000, 0x00000000, 0x00004008 },			\
+  { 0xffffffff, 0x00000000, 0x00000000, 0x00004008,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* FLOAT_REGS.  */							\
-  { 0x00000000, 0xffffffff, 0x00000000, 0x00000000 },			\
+  { 0x00000000, 0xffffffff, 0x00000000, 0x00000000,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
+  /* VC128_REGS.  */							\
+  { 0x00000000, 0x00000000, 0x000000ff, 0x00000000,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* ALTIVEC_REGS.  */							\
-  { 0x00000000, 0x00000000, 0xffffffff, 0x00000000 },			\
+  { 0x00000000, 0x00000000, 0xffffffff, 0x00000000,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
+  /* VMX128_HI_REGS.  */							\
+  { 0x00000000, 0x00000000, 0x00000000, 0xff800000,			\
+    0xffffffff, 0xffffffff, 0x007fffff },				\
+  /* VMX128_REGS.  */							\
+  { 0x00000000, 0x00000000, 0xffffffff, 0xff800000,			\
+    0xffffffff, 0xffffffff, 0x007fffff },				\
   /* VSX_REGS.  */							\
-  { 0x00000000, 0xffffffff, 0xffffffff, 0x00000000 },			\
+  { 0x00000000, 0xffffffff, 0xffffffff, 0x00000000,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* DMR_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x007f8000 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x007f8000,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* VRSAVE_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00001000 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00001000,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* VSCR_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00002000 },			\
-  /* GEN_OR_FLOAT_REGS.  */						\
-  { 0xffffffff, 0xffffffff, 0x00000000, 0x00004008 },			\
-  /* GEN_OR_VSX_REGS.  */						\
-  { 0xffffffff, 0xffffffff, 0xffffffff, 0x00004008 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00002000,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
+  /* GEN_OR_FLOAT_REGS.  */							\
+  { 0xffffffff, 0xffffffff, 0x00000000, 0x00004008,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
+  /* GEN_OR_VSX_REGS.  */							\
+  { 0xffffffff, 0xffffffff, 0xffffffff, 0x00004008,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
+  /* GEN_OR_VMX128_REGS.  */							\
+  { 0xffffffff, 0x00000000, 0xffffffff, 0xff804008,			\
+    0xffffffff, 0xffffffff, 0x007fffff },				\
   /* LINK_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000001 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000001,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* CTR_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000002 },			\
-  /* LINK_OR_CTR_REGS.  */						\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000003 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000002,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
+  /* LINK_OR_CTR_REGS.  */							\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000003,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* SPECIAL_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00001003 },			\
-  /* SPEC_OR_GEN_REGS.  */						\
-  { 0xffffffff, 0x00000000, 0x00000000, 0x0000500b },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00001003,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
+  /* SPEC_OR_GEN_REGS.  */							\
+  { 0xffffffff, 0x00000000, 0x00000000, 0x0000500b,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* CR0_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000010 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000010,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* CR_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000ff0 },			\
-  /* NON_FLOAT_REGS.  */						\
-  { 0xffffffff, 0x00000000, 0x00000000, 0x00004ffb },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000ff0,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
+  /* NON_FLOAT_REGS.  */							\
+  { 0xffffffff, 0x00000000, 0x00000000, 0x00004ffb,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* CA_REGS.  */							\
-  { 0x00000000, 0x00000000, 0x00000000, 0x00000004 },			\
+  { 0x00000000, 0x00000000, 0x00000000, 0x00000004,			\
+    0x00000000, 0x00000000, 0x00000000 },				\
   /* ALL_REGS.  */							\
-  { 0xffffffff, 0xffffffff, 0xffffffff, 0x007fffff }			\
+  { 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,			\
+    0xffffffff, 0xffffffff, 0x007fffff }				\
 }
 
 /* The same information, inverted:
@@ -1205,6 +1404,8 @@ enum r6000_reg_class_enum {
   RS6000_CONSTRAINT_wx,		/* FPR register for STFIWX */
   RS6000_CONSTRAINT_wA,		/* BASE_REGS if 64-bit.  */
   RS6000_CONSTRAINT_wD,		/* Accumulator registers.  */
+  RS6000_CONSTRAINT_wU,		/* Xenon VMX128 v0-v7 (vperm128 control).  */
+  RS6000_CONSTRAINT_wV,		/* Xenon VMX128 v0-v127, else v0-v31.  */
   RS6000_CONSTRAINT_MAX
 };
 
@@ -1217,6 +1418,16 @@ extern enum reg_class rs6000_constraints[RS6000_CONSTRAINT_MAX];
 /* Return whether a given register class can hold VSX objects.  */
 #define VSX_REG_CLASS_P(CLASS)			\
   ((CLASS) == VSX_REGS || (CLASS) == FLOAT_REGS || (CLASS) == ALTIVEC_REGS)
+
+/* Return whether a given register class is one of the Xbox 360 Xenon VMX128
+   vector classes (ALTIVEC_REGS or one of the classes nested with it).
+   VC128_REGS, VMX128_HI_REGS and VMX128_REGS are empty unless
+   TARGET_VMX128.  */
+#define VMX128_REG_CLASS_P(CLASS)		\
+  ((CLASS) == VC128_REGS			\
+   || (CLASS) == ALTIVEC_REGS			\
+   || (CLASS) == VMX128_HI_REGS			\
+   || (CLASS) == VMX128_REGS)
 
 /* Return whether a given register class targets general purpose registers.  */
 #define GPR_REG_CLASS_P(CLASS) ((CLASS) == GENERAL_REGS || (CLASS) == BASE_REGS)
@@ -2090,7 +2301,104 @@ extern char rs6000_reg_names[][8];	/* register names (0 vs. %r0).  */
   &rs6000_reg_names[115][0],	/* dmr4  */				\
   &rs6000_reg_names[116][0],	/* dmr5  */				\
   &rs6000_reg_names[117][0],	/* dmr6  */				\
-  &rs6000_reg_names[118][0] 	/* dmr7  */				\
+  &rs6000_reg_names[118][0],	/* dmr7  */				\
+									\
+  &rs6000_reg_names[119][0],	/* v32  */				\
+  &rs6000_reg_names[120][0],	/* v33  */				\
+  &rs6000_reg_names[121][0],	/* v34  */				\
+  &rs6000_reg_names[122][0],	/* v35  */				\
+  &rs6000_reg_names[123][0],	/* v36  */				\
+  &rs6000_reg_names[124][0],	/* v37  */				\
+  &rs6000_reg_names[125][0],	/* v38  */				\
+  &rs6000_reg_names[126][0],	/* v39  */				\
+  &rs6000_reg_names[127][0],	/* v40  */				\
+  &rs6000_reg_names[128][0],	/* v41  */				\
+  &rs6000_reg_names[129][0],	/* v42  */				\
+  &rs6000_reg_names[130][0],	/* v43  */				\
+  &rs6000_reg_names[131][0],	/* v44  */				\
+  &rs6000_reg_names[132][0],	/* v45  */				\
+  &rs6000_reg_names[133][0],	/* v46  */				\
+  &rs6000_reg_names[134][0],	/* v47  */				\
+  &rs6000_reg_names[135][0],	/* v48  */				\
+  &rs6000_reg_names[136][0],	/* v49  */				\
+  &rs6000_reg_names[137][0],	/* v50  */				\
+  &rs6000_reg_names[138][0],	/* v51  */				\
+  &rs6000_reg_names[139][0],	/* v52  */				\
+  &rs6000_reg_names[140][0],	/* v53  */				\
+  &rs6000_reg_names[141][0],	/* v54  */				\
+  &rs6000_reg_names[142][0],	/* v55  */				\
+  &rs6000_reg_names[143][0],	/* v56  */				\
+  &rs6000_reg_names[144][0],	/* v57  */				\
+  &rs6000_reg_names[145][0],	/* v58  */				\
+  &rs6000_reg_names[146][0],	/* v59  */				\
+  &rs6000_reg_names[147][0],	/* v60  */				\
+  &rs6000_reg_names[148][0],	/* v61  */				\
+  &rs6000_reg_names[149][0],	/* v62  */				\
+  &rs6000_reg_names[150][0],	/* v63  */				\
+  &rs6000_reg_names[151][0],	/* v64  */				\
+  &rs6000_reg_names[152][0],	/* v65  */				\
+  &rs6000_reg_names[153][0],	/* v66  */				\
+  &rs6000_reg_names[154][0],	/* v67  */				\
+  &rs6000_reg_names[155][0],	/* v68  */				\
+  &rs6000_reg_names[156][0],	/* v69  */				\
+  &rs6000_reg_names[157][0],	/* v70  */				\
+  &rs6000_reg_names[158][0],	/* v71  */				\
+  &rs6000_reg_names[159][0],	/* v72  */				\
+  &rs6000_reg_names[160][0],	/* v73  */				\
+  &rs6000_reg_names[161][0],	/* v74  */				\
+  &rs6000_reg_names[162][0],	/* v75  */				\
+  &rs6000_reg_names[163][0],	/* v76  */				\
+  &rs6000_reg_names[164][0],	/* v77  */				\
+  &rs6000_reg_names[165][0],	/* v78  */				\
+  &rs6000_reg_names[166][0],	/* v79  */				\
+  &rs6000_reg_names[167][0],	/* v80  */				\
+  &rs6000_reg_names[168][0],	/* v81  */				\
+  &rs6000_reg_names[169][0],	/* v82  */				\
+  &rs6000_reg_names[170][0],	/* v83  */				\
+  &rs6000_reg_names[171][0],	/* v84  */				\
+  &rs6000_reg_names[172][0],	/* v85  */				\
+  &rs6000_reg_names[173][0],	/* v86  */				\
+  &rs6000_reg_names[174][0],	/* v87  */				\
+  &rs6000_reg_names[175][0],	/* v88  */				\
+  &rs6000_reg_names[176][0],	/* v89  */				\
+  &rs6000_reg_names[177][0],	/* v90  */				\
+  &rs6000_reg_names[178][0],	/* v91  */				\
+  &rs6000_reg_names[179][0],	/* v92  */				\
+  &rs6000_reg_names[180][0],	/* v93  */				\
+  &rs6000_reg_names[181][0],	/* v94  */				\
+  &rs6000_reg_names[182][0],	/* v95  */				\
+  &rs6000_reg_names[183][0],	/* v96  */				\
+  &rs6000_reg_names[184][0],	/* v97  */				\
+  &rs6000_reg_names[185][0],	/* v98  */				\
+  &rs6000_reg_names[186][0],	/* v99  */				\
+  &rs6000_reg_names[187][0],	/* v100  */				\
+  &rs6000_reg_names[188][0],	/* v101  */				\
+  &rs6000_reg_names[189][0],	/* v102  */				\
+  &rs6000_reg_names[190][0],	/* v103  */				\
+  &rs6000_reg_names[191][0],	/* v104  */				\
+  &rs6000_reg_names[192][0],	/* v105  */				\
+  &rs6000_reg_names[193][0],	/* v106  */				\
+  &rs6000_reg_names[194][0],	/* v107  */				\
+  &rs6000_reg_names[195][0],	/* v108  */				\
+  &rs6000_reg_names[196][0],	/* v109  */				\
+  &rs6000_reg_names[197][0],	/* v110  */				\
+  &rs6000_reg_names[198][0],	/* v111  */				\
+  &rs6000_reg_names[199][0],	/* v112  */				\
+  &rs6000_reg_names[200][0],	/* v113  */				\
+  &rs6000_reg_names[201][0],	/* v114  */				\
+  &rs6000_reg_names[202][0],	/* v115  */				\
+  &rs6000_reg_names[203][0],	/* v116  */				\
+  &rs6000_reg_names[204][0],	/* v117  */				\
+  &rs6000_reg_names[205][0],	/* v118  */				\
+  &rs6000_reg_names[206][0],	/* v119  */				\
+  &rs6000_reg_names[207][0],	/* v120  */				\
+  &rs6000_reg_names[208][0],	/* v121  */				\
+  &rs6000_reg_names[209][0],	/* v122  */				\
+  &rs6000_reg_names[210][0],	/* v123  */				\
+  &rs6000_reg_names[211][0],	/* v124  */				\
+  &rs6000_reg_names[212][0],	/* v125  */				\
+  &rs6000_reg_names[213][0],	/* v126  */				\
+  &rs6000_reg_names[214][0] 	/* v127  */				\
 }
 
 /* Table of additional register names to use in user input.  */
@@ -2146,6 +2454,31 @@ extern char rs6000_reg_names[][8];	/* register names (0 vs. %r0).  */
   {"vs60", 92}, {"vs61", 93}, {"vs62", 94}, {"vs63", 95},	\
   {"dmr0", 111}, {"dmr1", 112}, {"dmr2", 113}, {"dmr3", 114},   \
   {"dmr4", 115}, {"dmr5", 116}, {"dmr6", 117}, {"dmr7", 118},   \
+  /* Xenon VMX128 v32-v127 */					\
+  {"v32", 119}, {"v33", 120}, {"v34", 121}, {"v35", 122},	\
+  {"v36", 123}, {"v37", 124}, {"v38", 125}, {"v39", 126},	\
+  {"v40", 127}, {"v41", 128}, {"v42", 129}, {"v43", 130},	\
+  {"v44", 131}, {"v45", 132}, {"v46", 133}, {"v47", 134},	\
+  {"v48", 135}, {"v49", 136}, {"v50", 137}, {"v51", 138},	\
+  {"v52", 139}, {"v53", 140}, {"v54", 141}, {"v55", 142},	\
+  {"v56", 143}, {"v57", 144}, {"v58", 145}, {"v59", 146},	\
+  {"v60", 147}, {"v61", 148}, {"v62", 149}, {"v63", 150},	\
+  {"v64", 151}, {"v65", 152}, {"v66", 153}, {"v67", 154},	\
+  {"v68", 155}, {"v69", 156}, {"v70", 157}, {"v71", 158},	\
+  {"v72", 159}, {"v73", 160}, {"v74", 161}, {"v75", 162},	\
+  {"v76", 163}, {"v77", 164}, {"v78", 165}, {"v79", 166},	\
+  {"v80", 167}, {"v81", 168}, {"v82", 169}, {"v83", 170},	\
+  {"v84", 171}, {"v85", 172}, {"v86", 173}, {"v87", 174},	\
+  {"v88", 175}, {"v89", 176}, {"v90", 177}, {"v91", 178},	\
+  {"v92", 179}, {"v93", 180}, {"v94", 181}, {"v95", 182},	\
+  {"v96", 183}, {"v97", 184}, {"v98", 185}, {"v99", 186},	\
+  {"v100", 187}, {"v101", 188}, {"v102", 189}, {"v103", 190},	\
+  {"v104", 191}, {"v105", 192}, {"v106", 193}, {"v107", 194},	\
+  {"v108", 195}, {"v109", 196}, {"v110", 197}, {"v111", 198},	\
+  {"v112", 199}, {"v113", 200}, {"v114", 201}, {"v115", 202},	\
+  {"v116", 203}, {"v117", 204}, {"v118", 205}, {"v119", 206},	\
+  {"v120", 207}, {"v121", 208}, {"v122", 209}, {"v123", 210},	\
+  {"v124", 211}, {"v125", 212}, {"v126", 213}, {"v127", 214},	\
 }
 
 /* This is how to output an element of a case-vector that is relative.  */
@@ -2176,6 +2509,10 @@ extern char rs6000_reg_names[][8];	/* register names (0 vs. %r0).  */
 
 /* How to align the given loop. */
 #define LOOP_ALIGN(LABEL)  rs6000_loop_align(LABEL)
+
+/* Xenon loop-top padding labels (rs6000_xenon_reorg) carry their own
+   alignment; every other label gets the default.  */
+#define LABEL_ALIGN(LABEL)  rs6000_label_align (LABEL)
 
 /* Alignment guaranteed by __builtin_malloc.  */
 /* FIXME:  128-bit alignment is guaranteed by glibc for TARGET_64BIT.

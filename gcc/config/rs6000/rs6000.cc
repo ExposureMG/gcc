@@ -76,6 +76,7 @@
 #include "ipa-prop.h"
 #include "ipa-fnsummary.h"
 #include "except.h"
+#include "predict.h"
 #include "case-cfn-macros.h"
 #include "ppc-auxv.h"
 #include "rs6000-internal.h"
@@ -278,6 +279,8 @@ bool cpu_builtin_p = false;
    macros that have changed.  Languages that don't support the preprocessor
    don't link in rs6000-c.cc, so we can't call it directly.  */
 void (*rs6000_target_modify_macros_ptr) (bool, HOST_WIDE_INT);
+void (*rs6000_target_modify_cpu_macros_ptr) (bool, enum processor_type,
+					     HOST_WIDE_INT);
 
 /* Simplfy register classes into simpler classifications.  We assume
    GPR_REG_TYPE - FPR_REG_TYPE are ordered so that we can use a simple range
@@ -790,6 +793,33 @@ struct processor_costs ppccell_cost = {
   0,			/* SF->DF convert */
 };
 
+/* Instruction costs on the Xbox 360 Xenon PPE.  The numbers are the
+   generated XENON_* parameters (xenon-costs.def, from the hardware findings):
+   mullw 11, mulli 7 and mulld 13 cycles of issue, divw 46 / divd 78
+   (latency with general operands; they also block integer issue for 28-31
+   cycles), FP 10 cycles latency, fdiv(s) 74; 128-byte lines, 32 KB L1,
+   1 MB L2.  The rtx costs count simple insns (COSTS_N_INSNS (1) = one add),
+   and an add takes 2 cycles, so the cycle counts are scaled by XENON_COSTS
+   (cycles / XENON_COST_UNIT_CYCLES), as ppccell_cost halves Cell's.  */
+static const
+struct processor_costs ppcxenon_cost = {
+  XENON_COSTS (XENON_ISS_MULW),		/* mulsi */
+  XENON_COSTS (XENON_ISS_MULLI),	/* mulsi_const */
+  XENON_COSTS (XENON_ISS_MULLI),	/* mulsi_const9 */
+  XENON_COSTS (XENON_ISS_MULD),		/* muldi */
+  XENON_COSTS (XENON_COST_DIVW),	/* divsi */
+  XENON_COSTS (XENON_COST_DIVD),	/* divdi */
+  XENON_COSTS (XENON_LAT_FP),		/* fp */
+  XENON_COSTS (XENON_LAT_FP),		/* dmul */
+  XENON_COSTS (XENON_LAT_FDIVS),	/* sdiv */
+  XENON_COSTS (XENON_LAT_FDIV),		/* ddiv */
+  XENON_CACHE_LINE,			/* cache line size */
+  XENON_L1_KB,				/* l1 cache */
+  XENON_L2_KB,				/* l2 cache */
+  XENON_PREFETCH_STREAMS,		/* streams */
+  0,					/* SF->DF convert */
+};
+
 /* Instruction costs on PPC750 and PPC7400 processors.  */
 static const
 struct processor_costs ppc750_cost = {
@@ -1129,6 +1159,8 @@ static int rs6000_debug_adjust_cost (rtx_insn *, int, rtx_insn *, int,
 				     unsigned int);
 static bool is_microcoded_insn (rtx_insn *);
 static bool is_nonpipeline_insn (rtx_insn *);
+static void rs6000_xenon_reorg (void);
+static unsigned int rs6000_max_noce_ifcvt_seq_cost (edge);
 static bool is_cracked_insn (rtx_insn *);
 static bool is_load_insn (rtx, rtx *);
 static bool is_store_insn (rtx, rtx *);
@@ -1175,6 +1207,7 @@ const int INSN_NOT_AVAILABLE = -1;
 static void rs6000_print_isa_options (FILE *, int, const char *,
 				      HOST_WIDE_INT);
 static HOST_WIDE_INT rs6000_disable_incompatible_switches (void);
+static void rs6000_xenon_check_isa_flags (void);
 
 static enum rs6000_reg_type register_to_reg_type (rtx, bool *);
 static bool rs6000_secondary_reload_move (enum rs6000_reg_type,
@@ -1231,6 +1264,19 @@ char rs6000_reg_names[][8] =
       "vrsave", "vscr", "sfp",
   /* DMRs */
       "0", "1", "2", "3", "4", "5", "6", "7",
+  /* Xenon VMX128 v32-v127 */
+  "32", "33", "34", "35", "36", "37", "38", "39",
+  "40", "41", "42", "43", "44", "45", "46", "47",
+  "48", "49", "50", "51", "52", "53", "54", "55",
+  "56", "57", "58", "59", "60", "61", "62", "63",
+  "64", "65", "66", "67", "68", "69", "70", "71",
+  "72", "73", "74", "75", "76", "77", "78", "79",
+  "80", "81", "82", "83", "84", "85", "86", "87",
+  "88", "89", "90", "91", "92", "93", "94", "95",
+  "96", "97", "98", "99", "100", "101", "102", "103",
+  "104", "105", "106", "107", "108", "109", "110", "111",
+  "112", "113", "114", "115", "116", "117", "118", "119",
+  "120", "121", "122", "123", "124", "125", "126", "127",
 };
 
 #ifdef TARGET_REGNAMES
@@ -1259,6 +1305,19 @@ static const char alt_reg_names[][8] =
   "vrsave", "vscr", "sfp",
   /* DMRs */
   "%dm0", "%dm1", "%dm2", "%dm3", "%dm4", "%dm5", "%dm6", "%dm7",
+  /* Xenon VMX128 v32-v127 */
+  "%v32", "%v33", "%v34", "%v35", "%v36", "%v37", "%v38", "%v39",
+  "%v40", "%v41", "%v42", "%v43", "%v44", "%v45", "%v46", "%v47",
+  "%v48", "%v49", "%v50", "%v51", "%v52", "%v53", "%v54", "%v55",
+  "%v56", "%v57", "%v58", "%v59", "%v60", "%v61", "%v62", "%v63",
+  "%v64", "%v65", "%v66", "%v67", "%v68", "%v69", "%v70", "%v71",
+  "%v72", "%v73", "%v74", "%v75", "%v76", "%v77", "%v78", "%v79",
+  "%v80", "%v81", "%v82", "%v83", "%v84", "%v85", "%v86", "%v87",
+  "%v88", "%v89", "%v90", "%v91", "%v92", "%v93", "%v94", "%v95",
+  "%v96", "%v97", "%v98", "%v99", "%v100", "%v101", "%v102", "%v103",
+  "%v104", "%v105", "%v106", "%v107", "%v108", "%v109", "%v110", "%v111",
+  "%v112", "%v113", "%v114", "%v115", "%v116", "%v117", "%v118", "%v119",
+  "%v120", "%v121", "%v122", "%v123", "%v124", "%v125", "%v126", "%v127",
 };
 #endif
 
@@ -1405,6 +1464,11 @@ static const scoped_attribute_specs *const rs6000_attribute_table[] =
 #define TARGET_SCHED_ISSUE_RATE rs6000_issue_rate
 #undef TARGET_SCHED_ADJUST_COST
 #define TARGET_SCHED_ADJUST_COST rs6000_adjust_cost
+#undef TARGET_MACHINE_DEPENDENT_REORG
+#define TARGET_MACHINE_DEPENDENT_REORG rs6000_xenon_reorg
+
+#undef TARGET_MAX_NOCE_IFCVT_SEQ_COST
+#define TARGET_MAX_NOCE_IFCVT_SEQ_COST rs6000_max_noce_ifcvt_seq_cost
 #undef TARGET_SCHED_ADJUST_PRIORITY
 #define TARGET_SCHED_ADJUST_PRIORITY rs6000_adjust_priority
 #undef TARGET_SCHED_IS_COSTLY_DEPENDENCE
@@ -1646,6 +1710,9 @@ static const scoped_attribute_specs *const rs6000_attribute_table[] =
 #undef TARGET_CONDITIONAL_REGISTER_USAGE
 #define TARGET_CONDITIONAL_REGISTER_USAGE rs6000_conditional_register_usage
 
+#undef TARGET_CLASS_LIKELY_SPILLED_P
+#define TARGET_CLASS_LIKELY_SPILLED_P rs6000_class_likely_spilled_p
+
 #undef TARGET_SCHED_REASSOCIATION_WIDTH
 #define TARGET_SCHED_REASSOCIATION_WIDTH rs6000_reassociation_width
 
@@ -1846,7 +1913,7 @@ rs6000_hard_regno_nregs_internal (int regno, machine_mode mode)
 		? UNITS_PER_VSX_WORD
 		: UNITS_PER_FP_WORD);
 
-  else if (ALTIVEC_REGNO_P (regno))
+  else if (ALTIVEC_REGNO_P (regno) || VMX128_HI_REGNO_P (regno))
     reg_size = UNITS_PER_ALTIVEC_WORD;
 
   else if (DMR_REGNO_P (regno))
@@ -1927,6 +1994,14 @@ rs6000_hard_regno_mode_ok_uncached (int regno, machine_mode mode)
 	  return ALTIVEC_REGNO_P (last_regno);
 	}
     }
+
+  /* The Xenon VMX128 registers v32-v127 hold exactly what v0-v31 hold (a
+     value can then live in any of the 128 registers and move between them
+     with vor128), and only when they are enabled.  VMX128 implies no VSX,
+     so this is the AltiVec rule at the end of this function.  */
+  if (VMX128_HI_REGNO_P (regno))
+    return (TARGET_VMX128
+	    && (VECTOR_MEM_ALTIVEC_OR_VSX_P (mode) || mode == V1TImode));
 
   /* The GPRs can hold any mode, but values bigger than one register
      cannot go past R31.  */
@@ -2339,6 +2414,13 @@ rs6000_debug_reg_global (void)
   rs6000_debug_reg_print (FIRST_ALTIVEC_REGNO,
 			  LAST_ALTIVEC_REGNO,
 			  "vs");
+  if (TARGET_VMX128)
+    for (int r = FIRST_VMX128_HI_REGNO; r <= LAST_VMX128_HI_REGNO; r++)
+      {
+	char name[16];
+	snprintf (name, sizeof (name), "vmx128 v%d", VMX128_REGNUM (r));
+	rs6000_debug_reg_print (r, r, name);
+      }
   rs6000_debug_reg_print (FIRST_DMR_REGNO, LAST_DMR_REGNO, "dmr");
   rs6000_debug_reg_print (LR_REGNO, LR_REGNO, "lr");
   rs6000_debug_reg_print (CTR_REGNO, CTR_REGNO, "ctr");
@@ -2361,6 +2443,8 @@ rs6000_debug_reg_global (void)
 	   "wx reg_class = %s\n"
 	   "wA reg_class = %s\n"
 	   "wD reg_class = %s\n"
+	   "wU reg_class = %s\n"
+	   "wV reg_class = %s\n"
 	   "\n",
 	   reg_class_names[rs6000_constraints[RS6000_CONSTRAINT_d]],
 	   reg_class_names[rs6000_constraints[RS6000_CONSTRAINT_v]],
@@ -2369,7 +2453,9 @@ rs6000_debug_reg_global (void)
 	   reg_class_names[rs6000_constraints[RS6000_CONSTRAINT_wr]],
 	   reg_class_names[rs6000_constraints[RS6000_CONSTRAINT_wx]],
 	   reg_class_names[rs6000_constraints[RS6000_CONSTRAINT_wA]],
-	   reg_class_names[rs6000_constraints[RS6000_CONSTRAINT_wD]]);
+	   reg_class_names[rs6000_constraints[RS6000_CONSTRAINT_wD]],
+	   reg_class_names[rs6000_constraints[RS6000_CONSTRAINT_wU]],
+	   reg_class_names[rs6000_constraints[RS6000_CONSTRAINT_wV]]);
 
   nl = "\n";
   for (m = 0; m < NUM_MACHINE_MODES; ++m)
@@ -2831,6 +2917,17 @@ rs6000_init_hard_regno_mode_ok (bool global_init_p)
   for (r = FIRST_DMR_REGNO; r <= LAST_DMR_REGNO; ++r)
     rs6000_regno_regclass[r] = DMR_REGS;
 
+  /* Xenon VMX128: v0-v7 are the smallest class VC128_REGS and v32-v127 are
+     VMX128_HI_REGS.  Without TARGET_VMX128 those classes are empty
+     (rs6000_conditional_register_usage) and v32-v127 are in no class.  */
+  if (TARGET_VMX128)
+    {
+      for (r = FIRST_ALTIVEC_REGNO; r < FIRST_ALTIVEC_REGNO + 8; ++r)
+	rs6000_regno_regclass[r] = VC128_REGS;
+      for (r = FIRST_VMX128_HI_REGNO; r <= LAST_VMX128_HI_REGNO; ++r)
+	rs6000_regno_regclass[r] = VMX128_HI_REGS;
+    }
+
   rs6000_regno_regclass[CR0_REGNO] = CR0_REGS;
   for (r = CR1_REGNO; r <= CR7_REGNO; ++r)
     rs6000_regno_regclass[r] = CR_REGS;
@@ -2870,6 +2967,16 @@ rs6000_init_hard_regno_mode_ok (bool global_init_p)
     {
       reg_class_to_reg_type[(int)FLOAT_REGS] = FPR_REG_TYPE;
       reg_class_to_reg_type[(int)ALTIVEC_REGS] = ALTIVEC_REG_TYPE;
+    }
+
+  /* The Xenon VMX128 classes are all vector registers with the AltiVec
+     addressing rules (lvx128/stvx128 are indexed only, like lvx/stvx).
+     VMX128 implies no VSX.  */
+  if (TARGET_VMX128)
+    {
+      reg_class_to_reg_type[(int)VC128_REGS] = ALTIVEC_REG_TYPE;
+      reg_class_to_reg_type[(int)VMX128_HI_REGS] = ALTIVEC_REG_TYPE;
+      reg_class_to_reg_type[(int)VMX128_REGS] = ALTIVEC_REG_TYPE;
     }
 
   /* Precalculate the valid memory formats as well as the vector information,
@@ -3033,6 +3140,20 @@ rs6000_init_hard_regno_mode_ok (bool global_init_p)
     rs6000_constraints[RS6000_CONSTRAINT_v] = ALTIVEC_REGS;
   if (TARGET_VSX)
     rs6000_constraints[RS6000_CONSTRAINT_wa] = VSX_REGS;
+
+  /* Xenon VMX128 (plan 4.1).  wV is any register a VMX128 instruction can
+     name: v0-v127 with TARGET_VMX128, otherwise the AltiVec registers, so
+     that a pattern written with wV is the same as one written with v for
+     every other CPU (the output templates use the legacy mnemonic for
+     v0-v31).  wU is v0-v7, the vperm128 control operand; it has no
+     registers without TARGET_VMX128.  */
+  if (TARGET_VMX128)
+    {
+      rs6000_constraints[RS6000_CONSTRAINT_wU] = VC128_REGS;
+      rs6000_constraints[RS6000_CONSTRAINT_wV] = VMX128_REGS;
+    }
+  else if (TARGET_ALTIVEC)
+    rs6000_constraints[RS6000_CONSTRAINT_wV] = ALTIVEC_REGS;
   if (TARGET_DMF)
     rs6000_constraints[RS6000_CONSTRAINT_wD] = DMR_REGS;
   else if (TARGET_MMA)
@@ -3245,7 +3366,8 @@ rs6000_init_hard_regno_mode_ok (bool global_init_p)
       if (TARGET_VSX && VSX_REG_CLASS_P (c))
 	reg_size = UNITS_PER_VSX_WORD;
 
-      else if (c == ALTIVEC_REGS)
+      else if (c == ALTIVEC_REGS || c == VC128_REGS || c == VMX128_HI_REGS
+	       || c == VMX128_REGS)
 	reg_size = UNITS_PER_ALTIVEC_WORD;
 
       else if (c == FLOAT_REGS)
@@ -3465,8 +3587,22 @@ rs6000_md_asm_adjust (vec<rtx> & /*outputs*/, vec<rtx> & /*inputs*/,
 		      vec<machine_mode> & /*input_modes*/,
 		      vec<const char *> & /*constraints*/,
 		      vec<rtx> &/*uses*/, vec<rtx> &clobbers,
-		      HARD_REG_SET &clobbered_regs, location_t /*loc*/)
+		      HARD_REG_SET &clobbered_regs, location_t loc)
 {
+  /* The Xenon VMX128 register names v32-v127 are known for every rs6000
+     target (the registers are fixed unless TARGET_VMX128).  Without VMX128
+     they are not registers the code can use, so keep rejecting them in a
+     clobber list, as before they existed.  */
+  if (!TARGET_VMX128)
+    for (int r = FIRST_VMX128_HI_REGNO; r <= LAST_VMX128_HI_REGNO; r++)
+      if (TEST_HARD_REG_BIT (clobbered_regs, r))
+	{
+	  error_at (loc, "register %<v%d%> in an %<asm%> clobber list needs "
+		    "the Xenon VMX128 registers (%<-mcpu=xenon%>, "
+		    "%<-mvmx128%>)", VMX128_REGNUM (r));
+	  break;
+	}
+
   clobbers.safe_push (gen_rtx_REG (SImode, CA_REGNO));
   SET_HARD_REG_BIT (clobbered_regs, CA_REGNO);
   return NULL;
@@ -3506,6 +3642,23 @@ rs6000_override_options_after_change (void)
      until the define_insn_and_splits are fixed.  */
   if (!OPTION_SET_P (flag_late_combine_instructions))
     flag_late_combine_instructions = 0;
+
+  /* Xenon: -O2 vectorizes with the "cheap" cost model instead of "very
+     cheap".  Very cheap rejects every loop whose prologue and epilogue cost
+     more than one vector iteration saves, whatever the trip count, and on
+     Xenon each splat of a loop invariant and each reduction's final extract
+     goes through memory (FINDINGS 3.5, ~40 cycles, the vectorizer's
+     scalar_to_vec / vec_to_scalar costs).  So with the Xenon costs very
+     cheap kept almost no loop with an invariant or a reduction scalar, even
+     with a large known trip count.  Cheap compares those one-time costs
+     with the trip count (a runtime check when it is unknown), as GCC does
+     at -O2 for an explicit -ftree-vectorize.  -Os and an explicit
+     -fvect-cost-model keep their model.  */
+  if (rs6000_tune == PROCESSOR_XENON
+      && !OPTION_SET_P (flag_vect_cost_model)
+      && flag_vect_cost_model == VECT_COST_MODEL_VERY_CHEAP
+      && !optimize_size)
+    flag_vect_cost_model = VECT_COST_MODEL_CHEAP;
 }
 
 #ifdef TARGET_USES_LINUX64_OPT
@@ -3866,6 +4019,12 @@ rs6000_option_override_internal (bool global_init_p)
       if (TARGET_ALTIVEC)
 	error ("AltiVec not supported in this target");
     }
+
+  /* The Xenon PPE implements only the instructions listed in
+     isa/findings_instructions.csv.  Refuse ISA extensions it lacks, before
+     they can imply other options below.  */
+  if (rs6000_cpu == PROCESSOR_XENON)
+    rs6000_xenon_check_isa_flags ();
 
   /* If we are optimizing big endian systems for space, use the load/store
      multiple instructions.  */
@@ -4499,6 +4658,7 @@ rs6000_option_override_internal (bool global_init_p)
 			&& rs6000_tune != PROCESSOR_POWER11
 			&& rs6000_tune != PROCESSOR_PPCA2
 			&& rs6000_tune != PROCESSOR_CELL
+			&& rs6000_tune != PROCESSOR_XENON
 			&& rs6000_tune != PROCESSOR_PPC476);
   rs6000_sched_groups = (rs6000_tune == PROCESSOR_POWER4
 			 || rs6000_tune == PROCESSOR_POWER5
@@ -4665,6 +4825,21 @@ rs6000_option_override_internal (bool global_init_p)
 	      if (flag_align_loops && !str_align_loops)
 		str_align_loops = "8";
 	    }
+	  /* Xenon fetches 16-byte groups.  Only the phase of a loop top in its
+	     group was measured to matter (bytes 4 and 12 are 5-7 cycles per
+	     iteration faster than 0 and 8, FINDINGS 4); the -falign-loops
+	     power-of-two alignment cannot express that, so loops get the
+	     .p2align 3 + nop pad from rs6000_xenon_reorg (see
+	     rs6000_loop_align) unless -falign-loops is given.  Taken-branch
+	     targets showed no phase effect, so jumps are not aligned.  */
+	  if (rs6000_tune == PROCESSOR_XENON
+	      && flag_align_functions && !str_align_functions)
+	    {
+	      static char xenon_function_align[8];
+	      snprintf (xenon_function_align, sizeof xenon_function_align,
+			"%d", (int) XENON_FUNCTION_ALIGN);
+	      str_align_functions = xenon_function_align;
+	    }
 	  if (rs6000_align_branch_targets)
 	    {
 	      if (flag_align_functions && !str_align_functions)
@@ -4748,6 +4923,10 @@ rs6000_option_override_internal (bool global_init_p)
 
       case PROCESSOR_CELL:
 	rs6000_cost = &ppccell_cost;
+	break;
+
+      case PROCESSOR_XENON:
+	rs6000_cost = &ppcxenon_cost;
 	break;
 
       case PROCESSOR_PPC750:
@@ -4837,6 +5016,30 @@ rs6000_option_override_internal (bool global_init_p)
       SET_OPTION_IF_UNSET (&global_options, &global_options_set,
 			   param_l2_cache_size,
 			   rs6000_cost->l2_cache_size);
+
+      /* Xenon: software prefetch gave no benefit in the one stream measured
+	 (FINDINGS 5, single run), so -fprefetch-loop-arrays stays off unless
+	 asked for.  */
+      if (rs6000_tune == PROCESSOR_XENON && flag_prefetch_loop_arrays < 0)
+	flag_prefetch_loop_arrays = 0;
+
+      /* -mxenon-smt describes the Xenon sibling hardware thread; it only
+	 changes code tuned for Xenon (xenon.md, the unroll and vectorizer
+	 costs: rs6000_xenon_smt_mode), which with another command-line
+	 tuning is only a function that a target attribute or pragma tunes
+	 for Xenon.  Say so; -Wno-xenon-smt for makefiles that pass the
+	 option to several CPUs.  */
+      if (OPTION_SET_P (rs6000_xenon_smt) && rs6000_tune != PROCESSOR_XENON)
+	warning (OPT_Wxenon_smt, "%<-mxenon-smt=%> only affects code tuned "
+		 "for Xenon (%<-mtune=xenon%>, %<-mcpu=xenon%>, or a "
+		 "%<target%> attribute or pragma that selects them)");
+
+      /* Xenon: the loop-top pad (rs6000_loop_align) pays for itself from
+	 the third iteration on.  */
+      if (rs6000_tune == PROCESSOR_XENON)
+	SET_OPTION_IF_UNSET (&global_options, &global_options_set,
+			     param_align_loop_iterations,
+			     XENON_LOOP_PAD_MIN_ITERATIONS);
 
       /* Increase loop peeling limits based on performance analysis. */
       SET_OPTION_IF_UNSET (&global_options, &global_options_set,
@@ -4937,6 +5140,28 @@ rs6000_option_override_internal (bool global_init_p)
 	error ("%<-mrop-protect%> requires the ELFv2 ABI");
     }
 
+  /* The Xenon VMX128 registers v32-v127 (OPTION_MASK_VMX128, which
+     -mcpu=xenon turns on) exist only on Xenon, and are only used together
+     with AltiVec (VSX, which Xenon lacks, would conflict with them).  */
+  if (TARGET_VMX128)
+    {
+      bool explicit_p
+	= (rs6000_isa_flags_explicit & OPTION_MASK_VMX128) != 0;
+
+      if (rs6000_cpu != PROCESSOR_XENON)
+	{
+	  if (explicit_p)
+	    error ("%<-mvmx128%> requires %<-mcpu=xenon%>");
+	  rs6000_isa_flags &= ~OPTION_MASK_VMX128;
+	}
+      else if (!TARGET_ALTIVEC || TARGET_VSX)
+	{
+	  if (explicit_p)
+	    error ("%<-mvmx128%> requires %<-maltivec%>");
+	  rs6000_isa_flags &= ~OPTION_MASK_VMX128;
+	}
+    }
+
   /* Initialize all of the registers.  */
   rs6000_init_hard_regno_mode_ok (global_init_p);
 
@@ -4968,12 +5193,72 @@ rs6000_option_override (void)
 }
 
 
+/* Xenon loop-top padding (plan 5.3, FINDINGS 4).  A hot loop runs 5-7
+   cycles per iteration faster when its top is at byte 4 or 12 of the 16-byte
+   fetch group than at byte 0 or 8.  -falign-loops can only give power-of-two
+   alignment, so rs6000_loop_align records the loop labels of the current
+   function here and rs6000_xenon_reorg puts a label aligned to
+   2^XENON_LOOP_TOP_PAD_ALIGN_LOG plus one 4-byte nop in front of each.  */
+static GTY(()) vec<rtx, va_gc> *xenon_loop_pad_labels;
+static GTY(()) tree xenon_loop_pad_fndecl;
+
+/* True if Xenon loop-top padding is in effect: tuning for Xenon, loop
+   alignment enabled and no explicit -falign-loops=N.  */
+static bool
+rs6000_xenon_loop_pad_p (void)
+{
+  return (rs6000_tune == PROCESSOR_XENON
+	  && flag_align_loops
+	  && !str_align_loops
+	  && !optimize_function_for_size_p (cfun));
+}
+
 /* Implement LOOP_ALIGN. */
 align_flags
 rs6000_loop_align (rtx label)
 {
   basic_block bb;
   int ninsns;
+
+  if (rs6000_xenon_loop_pad_p ())
+    {
+      /* compute_alignments also passes blocks that are merely reached
+	 mostly by a jump (unroll-remainder joins, a "store; return" tail):
+	 param_align_loop_iterations is 1 for Xenon.  Only a loop header
+	 that the loop branches back to gets the pad; FINDINGS 4 shows no
+	 phase effect for other branch targets.  The pad nop is executed on
+	 the fall-through path into the label, so a header the loop body
+	 falls into (the back edge is a fall-through from the latch, e.g. a
+	 rotated loop entered at its test) is not padded either: the nop
+	 would run every iteration.  */
+      basic_block lbb = BLOCK_FOR_INSN (label);
+      class loop *loop = lbb ? lbb->loop_father : NULL;
+      bool back_jump = false, back_fallthru = false;
+      if (loop && loop->num != 0 && loop->header == lbb)
+	{
+	  edge e;
+	  edge_iterator ei;
+	  FOR_EACH_EDGE (e, ei, lbb->preds)
+	    if (flow_bb_inside_loop_p (loop, e->src))
+	      {
+		if (e->flags & EDGE_FALLTHRU)
+		  back_fallthru = true;
+		else
+		  back_jump = true;
+	      }
+	}
+      if (!back_jump || back_fallthru)
+	return align_flags ();
+
+      if (xenon_loop_pad_fndecl != current_function_decl)
+	{
+	  if (xenon_loop_pad_labels)
+	    xenon_loop_pad_labels->truncate (0);
+	  xenon_loop_pad_fndecl = current_function_decl;
+	}
+      vec_safe_push (xenon_loop_pad_labels, label);
+      return align_flags ();
+    }
 
   /* Don't override loop alignment if -falign-loops was specified. */
   if (!can_override_loop_align)
@@ -4992,6 +5277,25 @@ rs6000_loop_align (rtx label)
     return align_flags (5);
   else
     return align_loops;
+}
+
+/* Implement LABEL_ALIGN.  The labels rs6000_xenon_reorg puts in front of a
+   loop-top pad are aligned to 2^XENON_LOOP_TOP_PAD_ALIGN_LOG, so the pad nop
+   after them leaves the loop label at byte 4 or 12 of a 16-byte group; the
+   pad label and the nop are ordinary insns, so branch shortening accounts
+   for them exactly.  */
+align_flags
+rs6000_label_align (rtx_insn *label)
+{
+  if (rs6000_tune == PROCESSOR_XENON)
+    {
+      rtx_insn *next = next_nonnote_nondebug_insn (label);
+      if (next
+	  && NONJUMP_INSN_P (next)
+	  && recog_memoized (next) == CODE_FOR_xenon_loop_pad)
+	return align_flags (XENON_LOOP_TOP_PAD_ALIGN_LOG);
+    }
+  return align_labels;
 }
 
 /* Return true iff, data reference of TYPE can reach vector alignment (16)
@@ -5032,6 +5336,13 @@ rs6000_builtin_support_vector_misalignment (machine_mode mode,
 					    bool is_packed,
 					    bool is_gather_scatter)
 {
+  /* Xbox 360 Xenon VMX128: movmisalign<mode> handles any misalignment of
+     the AltiVec modes with lvlx/lvrx and stvlx/stvrx (vector.md).
+     Gathers and scatters are emulated with scalar element accesses, which
+     keep the generic AltiVec answer below.  */
+  if (TARGET_VMX128 && !is_gather_scatter)
+    return optab_handler (movmisalign_optab, mode) != CODE_FOR_nothing;
+
   if (TARGET_VSX)
     {
       if (is_gather_scatter)
@@ -5071,6 +5382,205 @@ rs6000_builtin_support_vector_misalignment (machine_mode mode,
   return false;
 }
 
+/* ADJUST_REG_ALLOC_ORDER: REG_ALLOC_ORDER, except that with VMX128 the
+   AltiVec argument registers v7-v2 come before v13-v8, because a vperm128
+   control operand must be in v0-v7 (wU): an invariant permute mask that IRA
+   puts in ALTIVEC_REGS (the legacy vperm alternative accepts any of v0-v31)
+   then lands in v0-v7 while those are free, and the vperm128 the
+   high-register operands force needs no vor copy of it.  */
+
+void
+rs6000_adjust_reg_alloc_order (void)
+{
+  static const int order[] = REG_ALLOC_ORDER;
+  static_assert (ARRAY_SIZE (order) == FIRST_PSEUDO_REGISTER,
+		 "REG_ALLOC_ORDER covers every hard register");
+  memcpy (reg_alloc_order, order, sizeof (order));
+  if (!TARGET_VMX128)
+    return;
+  /* Find the v13 ... v2 run (77 ... 66) and reorder it to v7 ... v2,
+     v13 ... v8.  */
+  for (int i = 0; i + 12 <= FIRST_PSEUDO_REGISTER; i++)
+    if (reg_alloc_order[i] == FIRST_ALTIVEC_REGNO + 13)
+      {
+	for (int k = 0; k < 12; k++)
+	  gcc_assert (reg_alloc_order[i + k] == FIRST_ALTIVEC_REGNO + 13 - k);
+	for (int k = 0; k < 6; k++)
+	  reg_alloc_order[i + k] = FIRST_ALTIVEC_REGNO + 7 - k;
+	for (int k = 0; k < 6; k++)
+	  reg_alloc_order[i + 6 + k] = FIRST_ALTIVEC_REGNO + 13 - k;
+	/* Keep the inverse (IRA's tie-break) consistent.  */
+	for (int r = 0; r < FIRST_PSEUDO_REGISTER; r++)
+	  inv_reg_alloc_order[reg_alloc_order[r]] = r;
+	return;
+      }
+  gcc_unreachable ();
+}
+
+/* Xenon SMT (plan 5.4, -mxenon-smt): the attribute enum of xenon.md must
+   follow enum rs6000_xenon_smt_mode, since xenon_smt is a symbol_ref cast of
+   rs6000_xenon_smt.  */
+static_assert ((int) XENON_SMT_IDLE == (int) XENON_SMT_MODE_IDLE
+	       && (int) XENON_SMT_BUSY == (int) XENON_SMT_MODE_BUSY
+	       && (int) XENON_SMT_SAME == (int) XENON_SMT_MODE_SAME,
+	       "xenon_smt attribute and enum rs6000_xenon_smt_mode differ");
+
+/* The -mxenon-smt mode in effect: the option when tuning for Xenon, idle
+   (no SMT adjustment) otherwise.  */
+
+static enum rs6000_xenon_smt_mode
+rs6000_xenon_smt_mode (void)
+{
+  return (rs6000_tune == PROCESSOR_XENON
+	  ? (enum rs6000_xenon_smt_mode) rs6000_xenon_smt
+	  : XENON_SMT_MODE_IDLE);
+}
+
+/* CYCLES of latency that an in-order Xenon thread cannot overlap (a
+   transfer through memory), in units of this thread's throughput-bound
+   issue cycles: with a busy sibling (or one running the same code) an issue
+   cycle of this thread takes about x1.9 (x2.28) as long while latency stays
+   (x1.00, x1.27), FINDINGS 7.  */
+
+static int
+rs6000_xenon_vect_latency_cost (int cycles)
+{
+  switch (rs6000_xenon_smt_mode ())
+    {
+    case XENON_SMT_MODE_BUSY:
+      return MAX (1, (cycles * XENON_SMT_BUSY_LAT_PER_ISSUE_X100 + 50) / 100);
+    case XENON_SMT_MODE_SAME:
+      return MAX (1, (cycles * XENON_SMT_SAME_LAT_PER_ISSUE_X100 + 50) / 100);
+    default:
+      return cycles;
+    }
+}
+
+/* By how much to divide unroll factors: unrolling buys independent work to
+   hide latency, and with the sibling owning every other issue cycle a
+   latency spans about half as many issue cycles of this thread (plan 5.4:
+   less unrolling when throughput-bound under SMT).  */
+
+static unsigned int
+rs6000_xenon_smt_unroll_div (void)
+{
+  switch (rs6000_xenon_smt_mode ())
+    {
+    case XENON_SMT_MODE_BUSY:
+      return XENON_SMT_BUSY_UNROLL_DIV;
+    case XENON_SMT_MODE_SAME:
+      return XENON_SMT_SAME_UNROLL_DIV;
+    default:
+      return 1;
+    }
+}
+
+/* In-loop instruction count of the exact single-precision sequence that
+   multiplies two integer vectors of MODE on Xenon (TARGET_XENON_VMUL_SEQ,
+   altivec.md), or 0 for other modes.  Generated table (VMUL_*_INSNS).  */
+
+static int
+rs6000_xenon_vmul_insns (machine_mode mode)
+{
+  switch (mode)
+    {
+    case E_V4SImode:
+      return XENON_VMUL_V4SI_INSNS;
+    case E_V8HImode:
+      return XENON_VMUL_V8HI_INSNS;
+    case E_V16QImode:
+      return XENON_VMUL_V16QI_INSNS;
+    default:
+      return 0;
+    }
+}
+
+/* Implement targetm.vectorize.builtin_vectorization_cost when tuning for
+   Xenon (plan 5.5).  The unit is an issue cycle of this thread: a simple
+   statement costs 1 as in the generic rs6000 costs, memory accesses cost
+   their stream throughput, and latency is charged only where an in-order
+   thread cannot hide it (transfers between register files go through
+   memory, ~40 cycles).  Every number comes from the generated table
+   (xenon-costs.def, VEC_*).  add_stmt_cost refines some of these with the
+   statement (rs6000_xenon_refine_stmt_cost).  Returns -1 for the cases the
+   generic code handles (CPUs other than Xenon tuned for Xenon).  */
+
+static int
+rs6000_xenon_vectorization_cost (enum vect_cost_for_stmt type_of_cost,
+				 tree vectype, int misalign ATTRIBUTE_UNUSED)
+{
+  unsigned int elements = (vectype && VECTOR_TYPE_P (vectype)
+			   ? vect_nunits_for_cost (vectype) : 1);
+
+  switch (type_of_cost)
+    {
+    case scalar_stmt:
+      return XENON_VEC_SCALAR_STMT;
+    case scalar_load:
+      return XENON_VEC_SCALAR_LOAD_GPR;
+    case scalar_store:
+      return XENON_VEC_SCALAR_STORE;
+
+    case vector_stmt:
+    case vec_perm:
+    case vec_promote_demote:
+      /* Every VMX op issues one per cycle; its latency (4 or 12) is the
+	 scheduler's business, as the scalar FP latency is.  */
+      return XENON_VEC_STMT;
+
+    case vector_load:
+      return XENON_VEC_LOAD;
+    case vector_store:
+      return XENON_VEC_STORE;
+
+    case unaligned_load:
+      /* movmisalign: lvlx + lvrx + vor (xenon_expand_movmisalign).  */
+      if (!TARGET_VMX128)
+	return -1;
+      return XENON_VEC_UNALIGNED_LOAD;
+    case unaligned_store:
+      /* movmisalign: stvlx + stvrx.  */
+      if (!TARGET_VMX128)
+	return -1;
+      return XENON_VEC_UNALIGNED_STORE;
+
+    case vector_gather_load:
+      /* No gather instruction: element loads, then a vector built through
+	 memory.  */
+      return (elements * XENON_VEC_SCALAR_LOAD_FPR
+	      + rs6000_xenon_vect_latency_cost (XENON_VEC_XFER)
+	      + (elements - 1) * XENON_VEC_CONSTRUCT_ELT);
+    case vector_scatter_store:
+      return (rs6000_xenon_vect_latency_cost (XENON_VEC_XFER)
+	      + elements * XENON_VEC_SCALAR_STORE);
+
+    case vec_to_scalar:
+    case scalar_to_vec:
+      /* A lane to or from a GPR/FPR: store, then a load that hits the store
+	 (FINDINGS 3.5).  This is what makes lane extracts and inserts, and
+	 SLP that needs them, expensive.  */
+      if (TARGET_DIRECT_MOVE)
+	return -1;
+      return rs6000_xenon_vect_latency_cost (XENON_VEC_XFER);
+
+    case vec_construct:
+      /* Each element stored to a stack slot, then one vector load that hits
+	 the stores (rs6000_expand_vector_init without VSX).  */
+      if (TARGET_DIRECT_MOVE)
+	return -1;
+      return (rs6000_xenon_vect_latency_cost (XENON_VEC_XFER)
+	      + (elements - 1) * XENON_VEC_CONSTRUCT_ELT);
+
+    case cond_branch_taken:
+      return XENON_VEC_BRANCH_TAKEN;
+    case cond_branch_not_taken:
+      return XENON_VEC_BRANCH_NOT_TAKEN;
+
+    default:
+      gcc_unreachable ();
+    }
+}
+
 /* Implement targetm.vectorize.builtin_vectorization_cost.  */
 static int
 rs6000_builtin_vectorization_cost (enum vect_cost_for_stmt type_of_cost,
@@ -5078,6 +5588,14 @@ rs6000_builtin_vectorization_cost (enum vect_cost_for_stmt type_of_cost,
 {
   unsigned elements;
   tree elem_type;
+
+  if (rs6000_tune == PROCESSOR_XENON)
+    {
+      int cost = rs6000_xenon_vectorization_cost (type_of_cost, vectype,
+						  misalign);
+      if (cost >= 0)
+	return cost;
+    }
 
   switch (type_of_cost)
     {
@@ -5146,6 +5664,14 @@ rs6000_builtin_vectorization_cost (enum vect_cost_for_stmt type_of_cost,
 	      }
 	  }
 
+	/* VMX128 movmisalign (-mcpu=xenon with another tuning): lvlx + lvrx
+	   + vor in this function's generic units, 2 + 2 + 1, against 2 for
+	   an aligned load (the add forming EA + 16 is usually shared or
+	   hoisted).  Xenon tuning uses the measured costs instead
+	   (rs6000_xenon_vectorization_cost, VEC_UNALIGNED_LOAD).  */
+	if (TARGET_VMX128)
+	  return 5;
+
 	if (TARGET_ALTIVEC)
 	  /* Misaligned loads are not supported.  */
 	  gcc_unreachable ();
@@ -5186,6 +5712,12 @@ rs6000_builtin_vectorization_cost (enum vect_cost_for_stmt type_of_cost,
 		  }
 	      }
 	  }
+
+	/* VMX128 movmisalign with another tuning: stvlx + stvrx, 1 + 1,
+	   against 1 for an aligned store (Xenon tuning:
+	   VEC_UNALIGNED_STORE).  */
+	if (TARGET_VMX128)
+	  return 2;
 
 	if (TARGET_ALTIVEC)
 	  /* Misaligned stores are not supported.  */
@@ -5290,6 +5822,15 @@ rs6000_cost_data::density_test (loop_vec_info loop_vinfo)
   if (m_costing_for_scalar)
     return;
 
+  /* Xenon (plan 5.5): every vector statement already costs the issue
+     cycles it holds the one VMX arithmetic pipe (a simple op 1, an integer
+     multiply its whole sequence), and element-wise loads pay the transfer
+     through memory in vec_construct, so neither the density penalty for
+     overcommitted vector units nor the extra construction cost below
+     applies (both would count the same resources twice).  */
+  if (rs6000_tune == PROCESSOR_XENON)
+    return;
+
   struct loop *loop = LOOP_VINFO_LOOP (loop_vinfo);
   basic_block *bbs = get_loop_body (loop);
   int nbbs = loop->num_nodes;
@@ -5369,6 +5910,342 @@ static vector_costs *
 rs6000_vectorize_create_costs (vec_info *vinfo, bool costing_for_scalar)
 {
   return new rs6000_cost_data (vinfo, costing_for_scalar);
+}
+
+/* CYCLES that an unpipelined scalar multiply or divide holds its unit, in
+   the vectorizer's units (this thread's throughput-bound issue cycles).
+   With a busy sibling the integer multiply/divide classes keep their
+   occupancy (FINDINGS 7 measures their busy chains at x1.04-1.08 / x1.05,
+   xenon.md), while a throughput-bound issue cycle takes x1.91 as long, so
+   they are relatively cheaper; with the sibling running the same code both
+   scale alike (x2.28).  */
+
+static int
+rs6000_xenon_vect_unit_cost (int cycles)
+{
+  if (rs6000_xenon_smt_mode () == XENON_SMT_MODE_BUSY)
+    return rs6000_xenon_vect_latency_cost (cycles);
+  return cycles;
+}
+
+/* Issue cycles of a scalar multiply of MODE by the constant COEFF on Xenon:
+   the shift/add synthesis expand_mult picks when it is cheaper than mulli
+   (mulsi_const), otherwise mulli (or mullw/mulld after loading a constant
+   that needs more than 16 bits).  */
+
+static int
+rs6000_xenon_scalar_mult_const_cost (HOST_WIDE_INT coeff, machine_mode mode)
+{
+  bool imm16 = IN_RANGE (coeff, -0x8000, 0x7fff);
+  int mult_cost = (imm16 ? rs6000_cost->mulsi_const
+		   : mode == DImode ? rs6000_cost->muldi : rs6000_cost->mulsi);
+  int synth = mult_by_coeff_cost (coeff, mode, true);
+  if (synth < mult_cost)
+    return MAX (1, CEIL (synth, COSTS_N_INSNS (1)));
+  if (imm16)
+    return rs6000_xenon_vect_unit_cost (XENON_ISS_MULLI);
+  return (rs6000_xenon_vect_unit_cost (mode == DImode ? XENON_ISS_MULD
+				       : XENON_ISS_MULW)
+	  + XENON_VEC_MUL_BIGCONST_EXTRA);
+}
+
+/* Xenon: does the scalar conversion ASSIGN (FLOAT_EXPR or FIX_TRUNC_EXPR
+   between an integer and a float) move its value between a GPR and an FPR?
+   There is no direct path, so such a move is a store and a load that hits
+   it (FINDINGS 3.5: GPR->FPR 40.13, FPR->GPR 38.45).  Exceptions, from the
+   code GCC emits for -mcpu=xenon: a signed 64-bit integer loaded from
+   memory is loaded straight into the FPR (lfd + fcfid), and a signed
+   float->int result that is only stored goes out with stfiwx (32 bits) or
+   stfd (64 bits).  The unsigned conversions have no FPR-only form before
+   POWER7 (fcfidu, fctiwuz) and go through GPRs.  */
+
+static bool
+xenon_scalar_conversion_xfer_p (gassign *assign)
+{
+  tree lhs = gimple_assign_lhs (assign);
+  tree rhs = gimple_assign_rhs1 (assign);
+  tree ltype = TREE_TYPE (lhs), rtype = TREE_TYPE (rhs);
+  switch (gimple_assign_rhs_code (assign))
+    {
+    case FLOAT_EXPR:
+      if (!INTEGRAL_TYPE_P (rtype) || !SCALAR_FLOAT_TYPE_P (ltype))
+	return false;
+      if (TYPE_PRECISION (rtype) == 64 && !TYPE_UNSIGNED (rtype)
+	  && TREE_CODE (rhs) == SSA_NAME)
+	{
+	  gimple *def = SSA_NAME_DEF_STMT (rhs);
+	  if (is_gimple_assign (def) && gimple_assign_load_p (def))
+	    return false;
+	}
+      return true;
+
+    case FIX_TRUNC_EXPR:
+      {
+	if (!SCALAR_FLOAT_TYPE_P (rtype) || !INTEGRAL_TYPE_P (ltype))
+	  return false;
+	if (TREE_CODE (lhs) != SSA_NAME
+	    || TYPE_UNSIGNED (ltype)
+	    || (TYPE_PRECISION (ltype) != 32 && TYPE_PRECISION (ltype) != 64))
+	  return true;
+	imm_use_iterator it;
+	use_operand_p use;
+	bool any = false;
+	FOR_EACH_IMM_USE_FAST (use, it, lhs)
+	  {
+	    gimple *u = USE_STMT (use);
+	    if (is_gimple_debug (u))
+	      continue;
+	    if (!gimple_store_p (u)
+		|| !is_gimple_assign (u)
+		|| gimple_assign_rhs1 (u) != lhs)
+	      return true;
+	    any = true;
+	  }
+	return !any;
+      }
+
+    default:
+      return false;
+    }
+}
+
+/* Xenon: the cost of a vectorizer prologue scalar_to_vec for STMT_INFO
+   when the vector it builds is a constant (vxor/vspltis*, VEC_STMT, or a
+   constant-pool load, VEC_LOAD) rather than a lane moved through memory:
+   the initial vector of a reduction whose initial value is a constant (the
+   usual "sum = 0": the vector is {init, neutral...} or a splat of it), and
+   the start and step vectors of an induction whose start and step are
+   constants.  Returns -1 otherwise.  */
+
+static int
+xenon_constant_prologue_vector_cost (vec_info *vinfo, stmt_vec_info stmt_info)
+{
+  loop_vec_info loop_vinfo = dyn_cast <loop_vec_info> (vinfo);
+  if (!loop_vinfo || !stmt_info)
+    return -1;
+  class loop *loop = LOOP_VINFO_LOOP (loop_vinfo);
+  edge pe = loop_preheader_edge (loop);
+
+  /* Induction: STMT_INFO is the header PHI.  */
+  if (gphi *phi = dyn_cast <gphi *> (stmt_info->stmt))
+    {
+      if (STMT_VINFO_DEF_TYPE (stmt_info) != vect_induction_def
+	  || gimple_bb (phi) != loop->header)
+	return -1;
+      tree init = PHI_ARG_DEF_FROM_EDGE (phi, pe);
+      tree step = STMT_VINFO_LOOP_PHI_EVOLUTION_PART (stmt_info);
+      if (init && step && CONSTANT_CLASS_P (init) && CONSTANT_CLASS_P (step))
+	return XENON_VEC_LOAD;
+      return -1;
+    }
+
+  /* Reduction: follow the reduction operand back to the header PHI.  */
+  stmt_vec_info s = stmt_info;
+  for (int steps = 0; s && steps < 16; steps++)
+    {
+      int idx = STMT_VINFO_REDUC_IDX (s);
+      if (idx < 0)
+	return -1;
+      tree op;
+      if (gassign *a = dyn_cast <gassign *> (s->stmt))
+	{
+	  if (idx + 1 >= (int) gimple_num_ops (a))
+	    return -1;
+	  op = gimple_op (a, idx + 1);
+	}
+      else if (gcall *c = dyn_cast <gcall *> (s->stmt))
+	{
+	  if (idx >= (int) gimple_call_num_args (c))
+	    return -1;
+	  op = gimple_call_arg (c, idx);
+	}
+      else
+	return -1;
+      if (TREE_CODE (op) != SSA_NAME)
+	return -1;
+      gimple *def = SSA_NAME_DEF_STMT (op);
+      if (gphi *phi = dyn_cast <gphi *> (def))
+	{
+	  if (gimple_bb (phi) != loop->header)
+	    return -1;
+	  tree init = PHI_ARG_DEF_FROM_EDGE (phi, pe);
+	  if (!init || !CONSTANT_CLASS_P (init))
+	    return -1;
+	  return (initializer_zerop (init) ? XENON_VEC_STMT : XENON_VEC_LOAD);
+	}
+      s = vinfo->lookup_def (op);
+    }
+  return -1;
+}
+
+/* Xenon (plan 5.5): refine COST, the rs6000_builtin_vectorization_cost of
+   KIND for VECTYPE, with the statement STMT_INFO.  Integer vector
+   multiplies (TARGET_XENON_VMUL_SEQ: the AltiVec multiply family is illegal,
+   altivec.md uses exact single-precision sequences of 12-33 instructions)
+   cost their in-loop instruction count whatever the tuning, since the
+   sequence is an ISA property; a multiply by a constant costs its shift/add
+   synthesis when that is shorter (expand_mult chooses it, see
+   rs6000_rtx_costs).  When tuning for Xenon the scalar side is refined too:
+   integer multiplies, divides and variable shifts are unpipelined or
+   microcoded (FINDINGS 2.3/2.4: mullw 11, mulld 13, mulli 7, divw 28,
+   slw 16, fdiv 74, fsqrt 84) and FP loads issue at 2.9 against 1 for GPR
+   loads.  Without this the vectorizer compared one vector multiply against
+   one mullw (s2b.md: "costs a vector multiply as 1 statement").  */
+
+static int
+rs6000_xenon_refine_stmt_cost (vec_info *vinfo, enum vect_cost_for_stmt kind,
+			       stmt_vec_info stmt_info, tree vectype,
+			       vect_cost_model_location where, int cost)
+{
+  if (!stmt_info || !stmt_info->stmt)
+    return cost;
+
+  bool tune_xenon = rs6000_tune == PROCESSOR_XENON;
+  gimple *stmt = stmt_info->stmt;
+  gassign *assign = dyn_cast <gassign *> (stmt);
+  tree_code code = assign ? gimple_assign_rhs_code (assign) : ERROR_MARK;
+
+  switch (kind)
+    {
+    case vector_stmt:
+      if (TARGET_XENON_VMUL_SEQ
+	  && code == MULT_EXPR
+	  && vectype
+	  && VECTOR_TYPE_P (vectype)
+	  && INTEGRAL_TYPE_P (TREE_TYPE (vectype)))
+	{
+	  machine_mode vmode = TYPE_MODE (vectype);
+	  int insns = rs6000_xenon_vmul_insns (vmode);
+	  if (insns == 0)
+	    return cost;
+	  tree op1 = gimple_assign_rhs2 (assign);
+	  tree cst = uniform_integer_cst_p (op1);
+	  if (cst && tree_fits_shwi_p (cst))
+	    {
+	      int synth = mult_by_coeff_cost (tree_to_shwi (cst), vmode, true);
+	      if (synth < COSTS_N_INSNS (insns))
+		insns = MAX (1, CEIL (synth, COSTS_N_INSNS (1)));
+	    }
+	  return insns * cost;
+	}
+      gcc_fallthrough ();
+
+    case vec_promote_demote:
+      /* vec_widen_[su]mult_{hi,lo}: one statement per half (costed as
+	 vector_stmt by vectorizable_conversion).  */
+      if (TARGET_XENON_VMUL_SEQ && code == WIDEN_MULT_EXPR)
+	{
+	  tree itype = TREE_TYPE (gimple_assign_rhs1 (assign));
+	  if (INTEGRAL_TYPE_P (itype))
+	    {
+	      if (TYPE_PRECISION (itype) == 16)
+		return XENON_VWMUL_V8HI_INSNS * cost;
+	      if (TYPE_PRECISION (itype) == 8)
+		return XENON_VWMUL_V16QI_INSNS * cost;
+	    }
+	}
+      return cost;
+
+    case scalar_to_vec:
+      /* A prologue vector that is a constant needs no transfer.  */
+      if (tune_xenon && where == vect_prologue)
+	{
+	  int c = xenon_constant_prologue_vector_cost (vinfo, stmt_info);
+	  if (c >= 0 && c < cost)
+	    return c;
+	}
+      return cost;
+
+    case scalar_load:
+      if (tune_xenon && STMT_VINFO_DATA_REF (stmt_info)
+	  && FLOAT_TYPE_P (TREE_TYPE (DR_REF (STMT_VINFO_DATA_REF (stmt_info)))))
+	return XENON_VEC_SCALAR_LOAD_FPR;
+      return cost;
+
+    case scalar_stmt:
+      if (!tune_xenon)
+	return cost;
+      if (assign)
+	{
+	  tree lhs = gimple_assign_lhs (assign);
+	  tree type = TREE_TYPE (lhs);
+	  if (!INTEGRAL_TYPE_P (type) && !SCALAR_FLOAT_TYPE_P (type))
+	    return cost;
+	  bool wide = TYPE_PRECISION (type) > 32;
+	  machine_mode mode = wide ? DImode : SImode;
+	  tree op1 = (get_gimple_rhs_class (code) == GIMPLE_BINARY_RHS
+		      ? gimple_assign_rhs2 (assign) : NULL_TREE);
+	  switch (code)
+	    {
+	    case MULT_EXPR:
+	      if (!INTEGRAL_TYPE_P (type))
+		return cost;
+	      if (op1 && tree_fits_shwi_p (op1))
+		return rs6000_xenon_scalar_mult_const_cost (tree_to_shwi (op1),
+							    mode);
+	      return rs6000_xenon_vect_unit_cost (wide ? XENON_ISS_MULD
+						  : XENON_ISS_MULW);
+
+	    case WIDEN_MULT_EXPR:
+	    case MULT_HIGHPART_EXPR:
+	      return rs6000_xenon_vect_unit_cost (wide ? XENON_ISS_MULD
+						  : XENON_ISS_MULW);
+
+	    case TRUNC_DIV_EXPR:
+	    case CEIL_DIV_EXPR:
+	    case FLOOR_DIV_EXPR:
+	    case ROUND_DIV_EXPR:
+	    case EXACT_DIV_EXPR:
+	    case TRUNC_MOD_EXPR:
+	    case CEIL_MOD_EXPR:
+	    case FLOOR_MOD_EXPR:
+	    case ROUND_MOD_EXPR:
+	      if (!INTEGRAL_TYPE_P (type))
+		return cost;
+	      /* By a constant: a multiply-high and shifts (or shifts alone
+		 for a power of two).  */
+	      if (op1 && TREE_CODE (op1) == INTEGER_CST)
+		return (integer_pow2p (op1) ? XENON_VEC_DIV_POW2_INSNS
+			: (rs6000_xenon_vect_unit_cost (wide ? XENON_ISS_MULD
+							: XENON_ISS_MULW)
+			   + XENON_VEC_DIV_CONST_EXTRA));
+	      return rs6000_xenon_vect_unit_cost (wide ? XENON_ISS_DIVD
+						  : XENON_ISS_DIVW);
+
+	    case LSHIFT_EXPR:
+	    case RSHIFT_EXPR:
+	    case LROTATE_EXPR:
+	    case RROTATE_EXPR:
+	      if (INTEGRAL_TYPE_P (type) && op1 && TREE_CODE (op1) != INTEGER_CST)
+		return XENON_ISS_VARSHIFT;
+	      return cost;
+
+	    case RDIV_EXPR:
+	      if (SCALAR_FLOAT_TYPE_P (type))
+		return XENON_ISS_FDIV;
+	      return cost;
+
+	    case FLOAT_EXPR:
+	    case FIX_TRUNC_EXPR:
+	      /* int <-> float: the value goes between a GPR and an FPR
+		 through memory (fcfid/fcti* themselves issue like any FP
+		 op).  */
+	      if (xenon_scalar_conversion_xfer_p (assign))
+		return cost + rs6000_xenon_vect_latency_cost (XENON_XFER_GPR_FPR);
+	      return cost;
+
+	    default:
+	      return cost;
+	    }
+	}
+      if (gcall *call = dyn_cast <gcall *> (stmt))
+	if (gimple_call_combined_fn (call) == CFN_SQRT)
+	  return XENON_ISS_FSQRT;
+      return cost;
+
+    default:
+      return cost;
+    }
 }
 
 /* Adjust vectorization cost after calling rs6000_builtin_vectorization_cost.
@@ -5505,6 +6382,9 @@ rs6000_cost_data::add_stmt_cost (int count, vect_cost_for_stmt kind,
     {
       int stmt_cost = rs6000_builtin_vectorization_cost (kind, vectype,
 							 misalign);
+      if (TARGET_XENON_VMUL_SEQ || rs6000_tune == PROCESSOR_XENON)
+	stmt_cost = rs6000_xenon_refine_stmt_cost (m_vinfo, kind, stmt_info,
+						   vectype, where, stmt_cost);
       stmt_cost += rs6000_adjust_vect_cost_per_stmt (kind, stmt_info);
       /* Statements in an inner loop relative to the loop being
 	 vectorized are weighted more heavily.  The value here is
@@ -5576,6 +6456,10 @@ rs6000_cost_data::determine_suggested_unroll_factor (loop_vec_info loop_vinfo)
   /* Use this simple hardware resource model that how many non ld/st
      vector instructions can be issued per cycle.  */
   unsigned int issue_width = rs6000_vect_unroll_issue;
+  /* Xenon with a busy sibling thread (-mxenon-smt): half the issue cycles,
+     so less unrolling is needed to keep this thread busy (plan 5.4).  */
+  if (!OPTION_SET_P (rs6000_vect_unroll_issue))
+    issue_width = MAX (1U, issue_width / rs6000_xenon_smt_unroll_div ());
   unsigned int uf = CEIL (reduc_factor * issue_width, nstmts_nonldst);
   uf = MIN ((unsigned int) rs6000_vect_unroll_limit, uf);
   /* Make sure it is power of 2.  */
@@ -5656,19 +6540,26 @@ rs6000_cost_data::finish_cost (const vector_costs *scalar_costs)
 static unsigned
 rs6000_loop_unroll_adjust (unsigned nunroll, struct loop *loop)
 {
+  /* Xenon with a busy sibling thread (-mxenon-smt=busy/same): the sibling
+     owns about every other issue cycle, so a latency spans half as many
+     issue cycles of this thread and half the unrolling hides it (plan 5.4:
+     less unrolling when throughput-bound under SMT).  1 for every other
+     CPU and for -mxenon-smt=idle.  */
+  unsigned div = rs6000_xenon_smt_unroll_div ();
+
    if (unroll_only_small_loops)
     {
       /* TODO: These are hardcoded values right now.  We probably should use
 	 a PARAM here.  */
       if (loop->ninsns <= 6)
-	return MIN (4, nunroll);
+	return MIN (4 / div, nunroll);
       if (loop->ninsns <= 10)
-	return MIN (2, nunroll);
+	return MIN (2 / div, nunroll);
 
       return 0;
     }
 
-  return nunroll;
+  return nunroll / div;
 }
 
 /* Returns a function decl for a vectorized version of the builtin function
@@ -5957,6 +6848,13 @@ rs6000_machine_from_flags (void)
   if (rs6000_cpu == PROCESSOR_CELL)
     return "cell";
 
+  /* Xbox 360 Xenon.  ".machine xenon" keeps gas in its Xenon dialect, which
+     enforces the instruction allow-list and the ISA 2.x (at-style) branch
+     hint encoding; any other .machine would switch it out again, even
+     under -mxenon.  */
+  if (rs6000_cpu == PROCESSOR_XENON)
+    return "xenon";
+
   /* Titan */
   if (rs6000_cpu == PROCESSOR_TITAN)
     return "titan";
@@ -6112,6 +7010,7 @@ direct_return (void)
       if (info->first_gp_reg_save == 32
 	  && info->first_fp_reg_save == 64
 	  && info->first_altivec_reg_save == LAST_ALTIVEC_REGNO + 1
+	  && info->vmx128_size == 0
 	  && ! info->lr_save_p
 	  && ! info->cr_save_p
 	  && info->vrsave_size == 0
@@ -6749,6 +7648,339 @@ vspltisw_vupkhsw_constant_p (rtx op, machine_mode mode, int *constant_ptr)
   if (constant_ptr)
     *constant_ptr = (int) value;
   return true;
+}
+
+/* Xbox 360 Xenon VMX128.  If the vector constant OP of mode MODE can be
+   formed in any of v0-v127 by VMX128 instructions alone, return true and
+   store in *VALUE the 32-bit word that every element of it is made of:
+   either a vspltisw128 immediate (-16..15; 0 and -1 included), or
+   0x80000000 (as -2^31), the sign-bit vector (e.g. -0.0 in V4SF), which
+   is vspltisw128 -1 + vslw128 (the shift count of each word is its own low
+   five bits).  The other easy AltiVec constants need vspltish, vspltisb or
+   vaddu*m, which only reach v0-v31.  */
+
+static bool
+xenon_vmx128_constant (rtx op, machine_mode mode, HOST_WIDE_INT *value)
+{
+  vec_const_128bit_type vconst;
+
+  if (!TARGET_VMX128 || GET_CODE (op) != CONST_VECTOR)
+    return false;
+
+  if (mode == VOIDmode)
+    mode = GET_MODE (op);
+
+  if (GET_MODE (op) != mode || !VECTOR_MEM_ALTIVEC_P (mode)
+      || GET_MODE_SIZE (mode) != 16)
+    return false;
+
+  if (!vec_const_128bit_to_bytes (op, mode, &vconst)
+      || !vconst.all_words_same)
+    return false;
+
+  HOST_WIDE_INT word = sext_hwi (vconst.words[0], 32);
+  if (!IN_RANGE (word, -16, 15)
+      && word != (HOST_WIDE_INT) (HOST_WIDE_INT_M1U << 31))
+    return false;
+
+  if (value)
+    *value = word;
+  return true;
+}
+
+/* Return true if the vector constant OP of mode MODE can be loaded into any
+   Xenon VMX128 register (the wW constraint).  */
+
+bool
+xenon_vmx128_constant_p (rtx op, machine_mode mode)
+{
+  return xenon_vmx128_constant (op, mode, NULL);
+}
+
+/* Return the assembler template for a vector move between two vector
+   registers, from or to memory (indexed or indirect address) or of a
+   vector constant that xenon_vmx128_constant_p accepts, for the AltiVec
+   vector move patterns.  The legacy AltiVec mnemonic is used when every
+   vector register in it is v0-v31, the VMX128 one (vor128, lvx128,
+   stvx128, vxor128, vspltisw128, vslw128) when one of them is v32-v127.
+   gas -mxenon accepts the 128 forms for v0-v31 as well; the legacy form is
+   kept there for readability and so that the output is unchanged for
+   every other CPU.  */
+
+const char *
+rs6000_output_vmx128_move (rtx *operands)
+{
+  rtx dest = operands[0];
+  rtx src = operands[1];
+  machine_mode mode = GET_MODE (dest);
+  bool hi_p = ((REG_P (dest) && VMX128_HI_REGNO_P (REGNO (dest)))
+	       || (REG_P (src) && VMX128_HI_REGNO_P (REGNO (src))));
+
+  gcc_assert (!hi_p || TARGET_VMX128);
+
+  if (REG_P (dest) && REG_P (src))
+    {
+      gcc_assert (VMX128_REGNO_P (REGNO (dest))
+		  && VMX128_REGNO_P (REGNO (src)));
+      return hi_p ? "vor128 %0,%1,%1" : "vor %0,%1,%1";
+    }
+
+  if (REG_P (dest) && MEM_P (src))
+    {
+      gcc_assert (VMX128_REGNO_P (REGNO (dest)));
+      return hi_p ? "lvx128 %0,%y1" : "lvx %0,%y1";
+    }
+
+  if (MEM_P (dest) && REG_P (src))
+    {
+      gcc_assert (VMX128_REGNO_P (REGNO (src)));
+      return hi_p ? "stvx128 %1,%y0" : "stvx %1,%y0";
+    }
+
+  gcc_assert (REG_P (dest) && VMX128_REGNO_P (REGNO (dest)));
+
+  if (src == const0_rtx || src == CONST0_RTX (mode))
+    return hi_p ? "vxor128 %0,%0,%0" : "vxor %0,%0,%0";
+
+  HOST_WIDE_INT word = 0;
+  bool ok = xenon_vmx128_constant (src, mode, &word);
+  gcc_assert (ok);
+  if (word == (HOST_WIDE_INT) (HOST_WIDE_INT_M1U << 31))
+    return (hi_p
+	    ? "vspltisw128 %0,-1\n\tvslw128 %0,%0,%0"
+	    : "vspltisw %0,-1\n\tvslw %0,%0,%0");
+
+  operands[2] = GEN_INT (word);
+  return hi_p ? "vspltisw128 %0,%2" : "vspltisw %0,%2";
+}
+
+/* Xbox 360 Xenon VMX128 (plan 4.2, step 5): the VMX128 forms of the legacy
+   AltiVec/Cell instructions, generated by tools/gen_xenon_retarget.py from
+   isa/xenon_isa.json (legacy_mirror, tied_operands, semantics).  DIRECT
+   forms take the same operands in the same order and are used by renaming
+   the mnemonic; TIED (vmaddfp128, vmaddcfp128, vnmsubfp128, vsel128) and
+   RESTRICTED (vperm128) forms are spelled out by the patterns, which tie
+   the destination ("0") or restrict the control register (wU).  */
+
+enum xenon_vmx128_kind { XENON_VMX128_DIRECT, XENON_VMX128_TIED,
+			 XENON_VMX128_RESTRICTED };
+
+struct xenon_vmx128_form
+{
+  const char *legacy;
+  const char *vmx128;
+  enum xenon_vmx128_kind kind;
+};
+
+static const struct xenon_vmx128_form xenon_vmx128_forms[] = {
+#define XENON_VMX128_FORM(LEGACY, VMX128, KIND) \
+  { LEGACY, VMX128, XENON_VMX128_##KIND },
+#include "xenon-vmx128-map.def"
+#undef XENON_VMX128_FORM
+};
+
+/* Return true if a register operand of the insn being output (recog_data)
+   is one of the VMX128 registers v32-v127.  */
+
+static bool
+xenon_vmx128_hi_operand_p (void)
+{
+  for (int i = 0; i < recog_data.n_operands; i++)
+    {
+      rtx op = recog_data.operand[i];
+      if (SUBREG_P (op))
+	op = SUBREG_REG (op);
+      if (REG_P (op) && VMX128_HI_REGNO_P (REGNO (op)))
+	return true;
+    }
+  return false;
+}
+
+/* The logical mnemonic that %q prints for the boolean operator X (see
+   print_operand), without the leading "v".  */
+
+static const char *
+xenon_vmx128_logical_name (rtx x)
+{
+  static const char *const tbl[3][3] = {
+    { "and", "andc", "nor" },
+    { "or", "orc", "nand" },
+    { "xor", "eqv", "xor" } };
+  const char *const *t;
+
+  switch (GET_CODE (x))
+    {
+    case AND: t = tbl[0]; break;
+    case IOR: t = tbl[1]; break;
+    case XOR: t = tbl[2]; break;
+    default: gcc_unreachable ();
+    }
+  if (GET_CODE (XEXP (x, 0)) != NOT)
+    return t[0];
+  return GET_CODE (XEXP (x, 1)) == NOT ? t[2] : t[1];
+}
+
+/* Output template for a single legacy AltiVec/Cell instruction that has a
+   VMX128 form.  LEGACY is its template; when every register operand of the
+   insn is v0-v31 (always, for every CPU but -mcpu=xenon -mvmx128) it is
+   returned unchanged.  Otherwise VMX128 is returned when non-null (the
+   destructive and restricted forms, whose templates the patterns spell
+   out), else LEGACY with its mnemonic replaced by the DIRECT VMX128 form
+   (a trailing "." of a record form is kept; a leading "v%qN" mnemonic, the
+   vector logical patterns, is resolved first).  An instruction without a
+   VMX128 form reaching here with v32-v127 operands is a bug in the
+   patterns' constraints: an internal error, never an illegal word.
+
+   The legacy mnemonic is kept for v0-v31 (gas -mxenon accepts the 128
+   forms there too): the output for v0-v31 is then the same as for every
+   other AltiVec CPU and as with -mno-vmx128.  */
+
+const char *
+xenon_vmx128_output (const char *legacy, const char *vmx128)
+{
+  static char buf[96];
+  char mnem[32];
+
+  if (!xenon_vmx128_hi_operand_p ())
+    return legacy;
+
+  gcc_assert (TARGET_VMX128);
+  if (vmx128)
+    return vmx128;
+
+  size_t len = strcspn (legacy, " \t");
+  const char *rest = legacy + len;
+  if (startswith (legacy, "v%q") && ISDIGIT (legacy[3]))
+    {
+      int opno = legacy[3] - '0';
+      gcc_assert (opno < recog_data.n_operands);
+      snprintf (mnem, sizeof mnem, "v%s",
+		xenon_vmx128_logical_name (recog_data.operand[opno]));
+    }
+  else
+    {
+      gcc_assert (len < sizeof mnem);
+      memcpy (mnem, legacy, len);
+      mnem[len] = '\0';
+    }
+
+  size_t mlen = strlen (mnem);
+  bool rc = mlen > 0 && mnem[mlen - 1] == '.';
+  if (rc)
+    mnem[--mlen] = '\0';
+
+  for (size_t i = 0; i < ARRAY_SIZE (xenon_vmx128_forms); i++)
+    if (xenon_vmx128_forms[i].kind == XENON_VMX128_DIRECT
+	&& strcmp (xenon_vmx128_forms[i].legacy, mnem) == 0)
+      {
+	int n = snprintf (buf, sizeof buf, "%s%s%s",
+			  xenon_vmx128_forms[i].vmx128, rc ? "." : "", rest);
+	gcc_assert (n > 0 && (size_t) n < sizeof buf);
+	return buf;
+      }
+
+  internal_error ("Xenon VMX128: %qs has no VMX128 form but has a "
+		  "v32-v127 operand", mnem);
+}
+
+/* Return REG as a pseudo register of mode Pmode usable as an address
+   register (a copy if it is a hard or virtual register or not a register at
+   all).  */
+
+static rtx
+xenon_misalign_addr_reg (rtx x)
+{
+  if (REG_P (x) && GET_MODE (x) == Pmode && REGNO (x) > LAST_VIRTUAL_REGISTER)
+    return x;
+  return copy_to_mode_reg (Pmode, x);
+}
+
+/* Prepare the misaligned vector memory reference MEM for the Xenon
+   left/right access patterns (altivec.md, "*xenon_lvlx_<mode>"): return MEM
+   with an indexed or indirect address EA of pseudo registers (keeping its
+   attributes), and set *BASE and *IDX16 to pseudo registers whose sum is
+   EA + 16 (*IDX16 = 16 for an indirect EA, index + 16 for an indexed one,
+   so that accesses sharing an index share the add).  */
+
+static rtx
+xenon_misalign_mem (rtx mem, rtx *base, rtx *idx16)
+{
+  rtx addr = XEXP (mem, 0);
+  rtx b, newaddr;
+
+  if (GET_CODE (addr) == PLUS
+      && REG_P (XEXP (addr, 0)) && REG_P (XEXP (addr, 1)))
+    {
+      b = xenon_misalign_addr_reg (XEXP (addr, 0));
+      rtx i = xenon_misalign_addr_reg (XEXP (addr, 1));
+      rtx t = gen_reg_rtx (Pmode);
+      emit_insn (gen_add3_insn (t, i, GEN_INT (16)));
+      *idx16 = t;
+      newaddr = gen_rtx_PLUS (Pmode, b, i);
+    }
+  else
+    {
+      b = xenon_misalign_addr_reg (addr);
+      *idx16 = force_reg (Pmode, GEN_INT (16));
+      newaddr = b;
+    }
+
+  *base = b;
+  return replace_equiv_address_nv (mem, newaddr);
+}
+
+/* Expand movmisalign<mode> for the AltiVec vector modes with -mvmx128 (Xbox
+   360 Xenon, plan 4.2): a misaligned load is
+     lvlx t1,EA ; lvrx t2,EA+16 ; vor DEST,t1,t2
+   and a misaligned store is
+     stvlx SRC,EA ; stvrx SRC,EA+16
+   (the 128 forms when a register is v32-v127).  These are correct for every
+   EA, aligned or not (FINDINGS 1.4: lvrx with an aligned EA loads zero
+   without an access, stvrx with an aligned EA stores nothing), and never
+   touch a byte outside the 16 at EA; see altivec.md.  */
+
+void
+xenon_expand_movmisalign (rtx dest, rtx src, machine_mode mode)
+{
+  gcc_assert (TARGET_VMX128 && VECTOR_MEM_ALTIVEC_P (mode));
+
+  if (MEM_P (dest) && MEM_P (src))
+    {
+      rtx tmp = gen_reg_rtx (mode);
+      xenon_expand_movmisalign (tmp, src, mode);
+      xenon_expand_movmisalign (dest, tmp, mode);
+      return;
+    }
+
+  rtx base, idx16;
+  if (MEM_P (src))
+    {
+      rtx mem = xenon_misalign_mem (src, &base, &idx16);
+      rtx left = gen_reg_rtx (mode);
+      rtx right = gen_reg_rtx (mode);
+      emit_insn (gen_rtx_SET (left, gen_rtx_UNSPEC (mode, gen_rtvec (1, mem),
+						     UNSPEC_LVLX)));
+      emit_insn (gen_rtx_SET (right,
+			      gen_rtx_UNSPEC (mode,
+					      gen_rtvec (3, mem, base, idx16),
+					      UNSPEC_LVRX)));
+      rtx res = REG_P (dest) && !HARD_REGISTER_P (dest)
+		? dest : gen_reg_rtx (mode);
+      emit_insn (gen_rtx_SET (res, gen_rtx_IOR (mode, left, right)));
+      if (res != dest)
+	emit_move_insn (dest, res);
+    }
+  else if (MEM_P (dest))
+    {
+      rtx val = force_reg (mode, src);
+      rtx mem = xenon_misalign_mem (dest, &base, &idx16);
+      emit_insn (gen_rtx_SET (mem,
+			      gen_rtx_UNSPEC (mode,
+					      gen_rtvec (3, val, base, idx16),
+					      UNSPEC_STVLX)));
+    }
+  else
+    emit_move_insn (dest, src);
 }
 
 const char *
@@ -8183,6 +9415,27 @@ rs6000_data_alignment (tree type, unsigned int align, enum data_align how)
 	  if (align < BITS_PER_WORD)
 	    align = BITS_PER_WORD;
 	}
+
+      /* Xenon (plan 5.3): an access crossing a 128-byte line costs ~55
+	 cycles (FINDINGS 5).  Optional alignment: arrays and aggregates of a
+	 quadword or more get 16 bytes (vector data, = STACK_BOUNDARY, so
+	 locals need no realignment); global ones of a line or more get the
+	 line (XENON_DATA_ALIGN_LARGE_BYTES).  */
+      if (rs6000_tune == PROCESSOR_XENON
+	  && !optimize_size
+	  && AGGREGATE_TYPE_P (type)
+	  && TYPE_SIZE_UNIT (type)
+	  && tree_fits_uhwi_p (TYPE_SIZE_UNIT (type)))
+	{
+	  unsigned HOST_WIDE_INT size = tree_to_uhwi (TYPE_SIZE_UNIT (type));
+	  if (how == align_opt
+	      && size >= XENON_DATA_ALIGN_LARGE_BYTES
+	      && align < XENON_DATA_ALIGN_LARGE_BYTES * BITS_PER_UNIT)
+	    align = XENON_DATA_ALIGN_LARGE_BYTES * BITS_PER_UNIT;
+	  else if (size >= XENON_DATA_ALIGN_VECTOR_BYTES
+		   && align < XENON_DATA_ALIGN_VECTOR_BYTES * BITS_PER_UNIT)
+	    align = XENON_DATA_ALIGN_VECTOR_BYTES * BITS_PER_UNIT;
+	}
     }
 
   return align;
@@ -8190,11 +9443,21 @@ rs6000_data_alignment (tree type, unsigned int align, enum data_align how)
 
 /* Implement TARGET_SLOW_UNALIGNED_ACCESS.  Altivec vector memory
    instructions simply ignore the low bits; VSX memory instructions
-   are aligned to 4 or 8 bytes.  */
+   are aligned to 4 or 8 bytes.  Xenon FP loads and stores take an
+   alignment interrupt unless EA % XENON_FP_MIN_ALIGN_BYTES == 0
+   (FINDINGS 1.4); there rs6000_emit_move keeps every under-aligned
+   SF/DF/SI/DI access out of the FPRs instead (xenon_misaligned_mov<mode>).  */
 
 static bool
 rs6000_slow_unaligned_access (machine_mode mode, unsigned int align)
 {
+  /* Xenon: rs6000_emit_move moves an under-aligned SFmode/DFmode value
+     through a GPR (one misaligned integer access, free inside a line), so
+     there is no need for byte accesses.  */
+  if (rs6000_cpu == PROCESSOR_XENON
+      && (mode == SFmode || mode == DFmode))
+    return false;
+
   return (STRICT_ALIGNMENT
 	  || (!TARGET_EFFICIENT_UNALIGNED_VSX
 	      && ((SCALAR_FLOAT_MODE_NOT_VECTOR_P (mode) && align < 32)
@@ -10325,9 +11588,66 @@ rs6000_conditional_register_usage (void)
 	for (i = FIRST_ALTIVEC_REGNO + 20; i < FIRST_ALTIVEC_REGNO + 32; ++i)
 	  fixed_regs[i] = call_used_regs[i] = 1;
     }
+
+  /* Xenon VMX128 registers v32-v127.  FIXED_REGISTERS has them free and
+     CALL_REALLY_USED_REGISTERS has the plan 4.3 convention (v32-v63
+     volatile, v64-v127 callee-saved), with the user's -ffixed-,
+     -fcall-used- and -fcall-saved- options already applied.  They stay
+     available only when TARGET_VMX128 (so a -ffixed-vN is kept); otherwise
+     make them fixed and empty the VMX128 classes, so that every other CPU
+     sees the register classes it always had.  */
+  if (TARGET_VMX128)
+    {
+      /* No prologue saves v32-v63 (rs6000-logue.cc saves v64-v127 only),
+	 so -fcall-saved-vN for one of them cannot be honoured: a callee
+	 would clobber it unsaved.  Reject it, once, and keep the register
+	 volatile.  (-fcall-saved-v0..v19 are silently reset by the AltiVec
+	 ABI code above, as upstream.)  */
+      static bool vmx128_call_saved_diagnosed = false;
+      for (i = FIRST_VMX128_HI_REGNO; i < FIRST_SAVED_VMX128_REGNO; ++i)
+	if (!fixed_regs[i] && !call_used_regs[i])
+	  {
+	    if (!vmx128_call_saved_diagnosed)
+	      error_at (UNKNOWN_LOCATION,
+			"%<-fcall-saved-v%d%> is not supported: v32-v63 are "
+			"volatile in the Xenon VMX128 ABI and are never saved "
+			"by a prologue", VMX128_REGNUM (i));
+	    call_used_regs[i] = 1;
+	  }
+      vmx128_call_saved_diagnosed = true;
+      /* v64-v127 are callee-saved only in the AltiVec ABI, where the
+	 prologue saves them like v20-v31 (rs6000-logue.cc); with
+	 -mabi=no-altivec nothing saves vector registers, so make them
+	 volatile.  */
+      if (!TARGET_ALTIVEC_ABI)
+	for (i = FIRST_SAVED_VMX128_REGNO; i <= LAST_VMX128_HI_REGNO; ++i)
+	  call_used_regs[i] = 1;
+    }
+  else
+    {
+      for (i = FIRST_VMX128_HI_REGNO; i <= LAST_VMX128_HI_REGNO; ++i)
+	fixed_regs[i] = call_used_regs[i] = 1;
+      CLEAR_HARD_REG_SET (reg_class_contents[VC128_REGS]);
+      CLEAR_HARD_REG_SET (reg_class_contents[VMX128_HI_REGS]);
+      CLEAR_HARD_REG_SET (reg_class_contents[VMX128_REGS]);
+      CLEAR_HARD_REG_SET (reg_class_contents[GEN_OR_VMX128_REGS]);
+    }
 }
 
 
+/* Implement TARGET_CLASS_LIKELY_SPILLED_P.  The Xenon VC128_REGS (v0-v7,
+   the only registers the vperm128 control operand can name) is a small
+   class that a reload may find completely occupied (plan 4.1).  */
+
+static bool
+rs6000_class_likely_spilled_p (reg_class_t rclass)
+{
+  if (rclass == VC128_REGS && TARGET_VMX128)
+    return true;
+
+  return default_class_likely_spilled_p (rclass);
+}
+
 /* Output insns to set DEST equal to the constant SOURCE as a series of
    lis, ori and shl instructions and return TRUE.  */
 
@@ -11052,6 +12372,76 @@ rs6000_emit_move (rtx dest, rtx source, machine_mode mode)
   if (CONST_WIDE_INT_P (operands[1])
       && GET_MODE_BITSIZE (mode) <= HOST_BITS_PER_WIDE_INT)
     gcc_unreachable ();
+
+  /* Xenon: FP loads and stores take an alignment interrupt unless
+     EA % 4 == 0, integer ones never trap and cost nothing extra inside a
+     line (FINDINGS 1.4, 5).  An SImode/DImode value may live in an FPR, so
+     a move to or from a MEM known to be less than 4-byte aligned uses the
+     GPR-only xenon_misaligned_mov<mode> (xenon.md); an SFmode/DFmode value
+     is moved as its SImode/DImode image the same way (and then reaches the
+     FPR through an aligned stack slot), which is why
+     rs6000_slow_unaligned_access does not force byte accesses for them.
+     Without 64-bit GPRs (-m32 -mno-powerpc64) an 8-byte value is moved as
+     two words with xenon_misaligned_movsi.  */
+  if (rs6000_cpu == PROCESSOR_XENON
+      && can_create_pseudo_p ()
+      && (mode == SImode || mode == DImode || mode == SFmode || mode == DFmode))
+    {
+      bool dmis = MEM_P (dest) && MEM_ALIGN (dest) < 32;
+      bool smis = MEM_P (source) && MEM_ALIGN (source) < 32;
+      if (dmis || smis)
+	{
+	  machine_mode imode = GET_MODE_SIZE (mode) == 8 ? DImode : SImode;
+	  bool words = imode == DImode && !TARGET_POWERPC64;
+	  if (MEM_P (dest) && MEM_P (source))
+	    {
+	      /* MEM to MEM: through a GPR.  */
+	      rtx tmp = gen_reg_rtx (imode);
+	      rs6000_emit_move (tmp, adjust_address (source, imode, 0), imode);
+	      rs6000_emit_move (adjust_address (dest, imode, 0), tmp, imode);
+	      return;
+	    }
+	  if (smis)
+	    {
+	      rtx tmp = mode == imode && !words ? dest : gen_reg_rtx (imode);
+	      if (mode == imode && !gpc_reg_operand (tmp, imode))
+		tmp = gen_reg_rtx (imode);
+	      if (words)
+		for (int w = 0; w < 2; w++)
+		  emit_insn (gen_xenon_misaligned_movsi
+			     (operand_subword (tmp, w, 1, DImode),
+			      adjust_address (source, SImode, w * 4)));
+	      else
+		{
+		  rtx mem = adjust_address (source, imode, 0);
+		  emit_insn (imode == SImode
+			     ? gen_xenon_misaligned_movsi (tmp, mem)
+			     : gen_xenon_misaligned_movdi (tmp, mem));
+		}
+	      if (tmp != dest)
+		emit_move_insn (dest, gen_lowpart (mode, tmp));
+	      return;
+	    }
+	  rtx src = force_reg (mode, source);
+	  if (mode != imode)
+	    src = gen_lowpart (imode, src);
+	  if (words)
+	    {
+	      rtx tmp = gen_reg_rtx (DImode);
+	      emit_move_insn (tmp, src);
+	      for (int w = 0; w < 2; w++)
+		emit_insn (gen_xenon_misaligned_movsi
+			   (adjust_address (dest, SImode, w * 4),
+			    operand_subword (tmp, w, 1, DImode)));
+	      return;
+	    }
+	  rtx mem = adjust_address (dest, imode, 0);
+	  emit_insn (imode == SImode
+		     ? gen_xenon_misaligned_movsi (mem, src)
+		     : gen_xenon_misaligned_movdi (mem, src));
+	  return;
+	}
+    }
 
 #ifdef HAVE_AS_GNU_ATTRIBUTE
   /* If we use a long double type, set the flags in .gnu_attribute that say
@@ -12433,7 +13823,8 @@ rs6000_secondary_reload_memory (rtx addr,
   else if (rclass == FLOAT_REGS)
     addr_mask = reg_addr[mode].addr_mask[RELOAD_REG_FPR];
 
-  else if (rclass == ALTIVEC_REGS)
+  else if (rclass == ALTIVEC_REGS
+	   || (TARGET_VMX128 && VMX128_REG_CLASS_P (rclass)))
     addr_mask = reg_addr[mode].addr_mask[RELOAD_REG_VMX];
 
   /* For the combined VSX_REGS, turn off Altivec AND -16.  */
@@ -12532,7 +13923,8 @@ rs6000_secondary_reload_memory (rtx addr,
 	  extra_cost = -1;
 	}
 
-      if (rclass != ALTIVEC_REGS)
+      if (rclass != ALTIVEC_REGS
+	  && !(TARGET_VMX128 && VMX128_REG_CLASS_P (rclass)))
 	{
 	  if (legitimate_indirect_address_p (and_arg, false))
 	    extra_cost = 1;
@@ -13207,7 +14599,8 @@ rs6000_secondary_reload_inner (rtx reg, rtx mem, rtx scratch, bool store_p)
   else if (IN_RANGE (regno, FIRST_FPR_REGNO, LAST_FPR_REGNO))
     addr_mask = reg_addr[mode].addr_mask[RELOAD_REG_FPR];
 
-  else if (IN_RANGE (regno, FIRST_ALTIVEC_REGNO, LAST_ALTIVEC_REGNO))
+  else if (IN_RANGE (regno, FIRST_ALTIVEC_REGNO, LAST_ALTIVEC_REGNO)
+	   || (TARGET_VMX128 && VMX128_HI_REGNO_P (regno)))
     addr_mask = reg_addr[mode].addr_mask[RELOAD_REG_VMX];
 
   else
@@ -13484,9 +14877,35 @@ rs6000_preferred_reload_class (rtx x, enum reg_class rclass)
 
   /* If a mode can't go in FPR/ALTIVEC/VSX registers, don't return a preferred
      reload class for it.  */
-  if ((rclass == ALTIVEC_REGS || rclass == VSX_REGS)
+  if ((rclass == ALTIVEC_REGS || rclass == VSX_REGS
+       || (TARGET_VMX128 && VMX128_REG_CLASS_P (rclass)))
       && (reg_addr[mode].addr_mask[RELOAD_REG_VMX] & RELOAD_REG_VALID) == 0)
     return NO_REGS;
+
+  /* Xenon VMX128 classes.  A vector constant that one vspltisw128 or
+     vxor128 forms can go into any of them; the other easy constants need
+     the legacy splat instructions, so v0-v31; anything else goes to memory
+     (as for ALTIVEC_REGS below).  Other values reload into the class as
+     is (lvx128/stvx128, vor128).  */
+  if (TARGET_VMX128 && VMX128_REG_CLASS_P (rclass) && rclass != ALTIVEC_REGS)
+    {
+      if (GET_CODE (x) == CONST_VECTOR)
+	{
+	  if (xenon_vmx128_constant_p (x, mode))
+	    return rclass;
+	  if (easy_vector_constant (x, mode))
+	    {
+	      if (reg_class_subset_p (rclass, ALTIVEC_REGS))
+		return rclass;
+	      if (reg_class_subset_p (ALTIVEC_REGS, rclass))
+		return ALTIVEC_REGS;
+	    }
+	  return NO_REGS;
+	}
+      if (is_constant || GET_CODE (x) == PLUS)
+	return NO_REGS;
+      return rclass;
+    }
 
   if ((rclass == FLOAT_REGS || rclass == VSX_REGS)
       && (reg_addr[mode].addr_mask[RELOAD_REG_FPR] & RELOAD_REG_VALID) == 0)
@@ -13740,6 +15159,13 @@ rs6000_secondary_reload_class (enum reg_class rclass, machine_mode mode,
       && rclass == ALTIVEC_REGS)
     return NO_REGS;
 
+  /* Likewise memory and any VMX128 register into the Xenon VMX128 classes
+     (vor128, lvx128).  */
+  if (TARGET_VMX128
+      && (regno == -1 || VMX128_REGNO_P (regno))
+      && VMX128_REG_CLASS_P (rclass))
+    return NO_REGS;
+
   /* We can copy among the CR registers.  */
   if ((rclass == CR_REGS || rclass == CR0_REGS)
       && regno >= 0 && CR_REGNO_P (regno))
@@ -13866,7 +15292,9 @@ rs6000_can_change_mode_class (machine_mode from,
       return (from_size == 8 || from_size == 16);
     }
 
-  if (TARGET_ALTIVEC && rclass == ALTIVEC_REGS
+  if (TARGET_ALTIVEC
+      && (rclass == ALTIVEC_REGS
+	  || (TARGET_VMX128 && VMX128_REG_CLASS_P (rclass)))
       && (ALTIVEC_VECTOR_MODE (from) + ALTIVEC_VECTOR_MODE (to)) == 1)
     return false;
 
@@ -13921,6 +15349,12 @@ rs6000_output_move_128bit (rtx operands[])
   int src_regno;
   bool dest_gpr_p, dest_fp_p, dest_vmx_p, dest_vsx_p;
   bool src_gpr_p, src_fp_p, src_vmx_p, src_vsx_p;
+
+  /* Xenon VMX128 registers v32-v127 (no VSX with them).  */
+  if (TARGET_VMX128
+      && ((REG_P (dest) && VMX128_HI_REGNO_P (REGNO (dest)))
+	  || (REG_P (src) && VMX128_HI_REGNO_P (REGNO (src)))))
+    return rs6000_output_vmx128_move (operands);
 
   if (REG_P (dest))
     {
@@ -17179,7 +18613,13 @@ rs6000_expand_atomic_compare_and_swap (rtx operands[], bool local)
     }
   label2 = gen_rtx_LABEL_REF (VOIDmode, gen_label_rtx ());
 
-  emit_load_locked (mode, retval, mem, local ? const1_rtx : const0_rtx);
+  /* The Xenon PPE only implements lwarx/ldarx with EH = 0 (the exclusive
+     access hint is not in isa/findings_instructions.csv), so the "local"
+     hint of __builtin_ppc_atomic_cas_local is dropped there; it is only a
+     performance hint.  */
+  emit_load_locked (mode, retval, mem,
+		    local && rs6000_cpu != PROCESSOR_XENON
+		    ? const1_rtx : const0_rtx);
 
   x = retval;
   if (mask)
@@ -18356,6 +19796,520 @@ rs6000_variable_issue (FILE *stream, int verbose, rtx_insn *insn, int more)
   return r;
 }
 
+/* Xbox 360 Xenon scheduling and cost support (plan section 5).  The numbers
+   are the XENON_* parameters generated into xenon-costs.def; the pipeline
+   description is xenon.md.  */
+
+/* True when tuning for Xenon and optimizing this function for speed: then
+   microcoded forms with a cheap equivalent are avoided (andi./andis.).  */
+
+bool
+rs6000_xenon_avoid_microcode_p (void)
+{
+  if (rs6000_tune != PROCESSOR_XENON)
+    return false;
+  return cfun ? optimize_function_for_speed_p (cfun) : !optimize_size;
+}
+
+/* True if the algebraic loads (lha lhau lhax lhaux lwa lwax lwaux, 20-24
+   cycles, microcoded) are replaced by lhz/lwz + extsh/extsw (5 + 2 cycles):
+   the predicates lha_operand / lwa_operand then refuse memory.  Not when the
+   ISA has lfiwax/lxsiwax, whose patterns emit sign-extending memory
+   operands themselves (never the case for -mcpu=xenon).  */
+
+bool
+rs6000_xenon_avoid_algebraic_load_p (void)
+{
+  return (rs6000_xenon_avoid_microcode_p ()
+	  && !TARGET_LFIWAX && !TARGET_P8_VECTOR);
+}
+
+/* Return the SET_SRC of INSN's single set, or NULL.  */
+
+static rtx
+xenon_single_src (rtx_insn *insn)
+{
+  rtx set = single_set (insn);
+  return set ? SET_SRC (set) : NULL_RTX;
+}
+
+/* vrefp / vrsqrtefp (type "vecfloat"): latency 14, half pipelined.  */
+
+bool
+rs6000_xenon_vest_p (rtx_insn *insn)
+{
+  rtx src = xenon_single_src (insn);
+  return (src
+	  && GET_CODE (src) == UNSPEC
+	  && (XINT (src, 1) == UNSPEC_FRES || XINT (src, 1) == UNSPEC_RSQRT)
+	  && VECTOR_MODE_P (GET_MODE (src)));
+}
+
+/* vcmp*. : a vector compare that also sets CR6 (32 cycles, microcoded).  */
+
+bool
+rs6000_xenon_vec_predicate_p (rtx_insn *insn)
+{
+  rtx pat = PATTERN (insn);
+  if (GET_CODE (pat) != PARALLEL)
+    return false;
+  for (int i = 0; i < XVECLEN (pat, 0); i++)
+    {
+      rtx x = XVECEXP (pat, 0, i);
+      if (GET_CODE (x) == SET
+	  && REG_P (SET_DEST (x))
+	  && REGNO (SET_DEST (x)) == CR6_REGNO
+	  && GET_CODE (SET_SRC (x)) == UNSPEC)
+	return true;
+    }
+  return false;
+}
+
+/* mfvscr / mtvscr (type "vecsimple"): 40 cycles.  */
+
+bool
+rs6000_xenon_vscr_move_p (rtx_insn *insn)
+{
+  rtx src = xenon_single_src (insn);
+  return (src
+	  && GET_CODE (src) == UNSPEC_VOLATILE
+	  && (XINT (src, 1) == UNSPECV_MTVSCR || XINT (src, 1) == UNSPECV_MFVSCR));
+}
+
+/* mftb (no type attribute): 44 cycles.  */
+
+bool
+rs6000_xenon_mftb_p (rtx_insn *insn)
+{
+  rtx src = xenon_single_src (insn);
+  return (src
+	  && GET_CODE (src) == UNSPEC_VOLATILE
+	  && XINT (src, 1) == UNSPECV_MFTB);
+}
+
+/* mffs (no type attribute): 30 cycles.  */
+
+bool
+rs6000_xenon_mffs_p (rtx_insn *insn)
+{
+  rtx src = xenon_single_src (insn);
+  return (src
+	  && GET_CODE (src) == UNSPEC_VOLATILE
+	  && XINT (src, 1) == UNSPECV_MFFS);
+}
+
+/* sync (= hwsync, 162 cycles) as opposed to lwsync (32).  */
+
+bool
+rs6000_xenon_hwsync_p (rtx_insn *insn)
+{
+  rtx src = xenon_single_src (insn);
+  return (src
+	  && GET_CODE (src) == UNSPEC
+	  && XINT (src, 1) == UNSPEC_SYNC);
+}
+
+/* A move to the CR that the output templates write as mtcrf (several
+   fields, or no mtocrf): 20 cycles, microcoded.  A single field becomes a
+   1-cycle mtocrf when tuning for Xenon with MFCRF (*mtcrfsi, *movcc).  */
+
+bool
+rs6000_xenon_mtcrf_multi_p (rtx_insn *insn)
+{
+  if (!TARGET_MFCRF || rs6000_tune != PROCESSOR_XENON)
+    return true;
+  rtx pat = PATTERN (insn);
+  return GET_CODE (pat) == PARALLEL && XVECLEN (pat, 0) > 1;
+}
+
+/* Is TYPE produced into a GPR (for the GPR forwarding quirks)?  */
+
+static bool
+xenon_gpr_result_type_p (enum attr_type type)
+{
+  switch (type)
+    {
+    case TYPE_INTEGER: case TYPE_TWO: case TYPE_THREE: case TYPE_ADD:
+    case TYPE_LOGICAL: case TYPE_SHIFT: case TYPE_INSERT: case TYPE_MUL:
+    case TYPE_HALFMUL: case TYPE_DIV: case TYPE_EXTS: case TYPE_CNTLZ:
+    case TYPE_POPCNT: case TYPE_ISEL: case TYPE_LOAD: case TYPE_MFJMPR:
+    case TYPE_MFCR: case TYPE_MFCRF: case TYPE_LOAD_L:
+      return true;
+    default:
+      return false;
+    }
+}
+
+/* Does DEP_INSN's result feed the control (third) operand of INSN, a
+   vperm?  */
+
+static bool
+xenon_feeds_vperm_control_p (rtx_insn *dep_insn, rtx_insn *insn)
+{
+  rtx dep_set = single_set (dep_insn);
+  rtx src = xenon_single_src (insn);
+  if (!dep_set || !src || GET_CODE (src) != UNSPEC
+      || (XINT (src, 1) != UNSPEC_VPERM && XINT (src, 1) != UNSPEC_VPERM_UNS)
+      || XVECLEN (src, 0) < 3)
+    return false;
+  return reg_mentioned_p (SET_DEST (dep_set), XVECEXP (src, 0, 2));
+}
+
+/* Does DEP_INSN set the link register (as opposed to the count register)?  */
+
+static bool
+xenon_sets_lr_p (rtx_insn *dep_insn)
+{
+  rtx set = single_set (dep_insn);
+  return (set && REG_P (SET_DEST (set))
+	  && REGNO (SET_DEST (set)) == LR_REGNO);
+}
+
+/* lvsl / lvsr (type "vecload"): they compute a permute control vector from
+   the address and do no memory access (FINDINGS 1.4); the CSV puts them in
+   the VMX pipe, not the load path.  */
+
+bool
+rs6000_xenon_lvsl_p (rtx_insn *insn)
+{
+  rtx src = xenon_single_src (insn);
+  return (src
+	  && GET_CODE (src) == UNSPEC
+	  && (XINT (src, 1) == UNSPEC_LVSL || XINT (src, 1) == UNSPEC_LVSR
+	      || XINT (src, 1) == UNSPEC_LVSL_REG
+	      || XINT (src, 1) == UNSPEC_LVSR_REG));
+}
+
+static bool get_memref_parts (rtx, rtx *, HOST_WIDE_INT *, HOST_WIDE_INT *);
+
+/* Load-hit-store (FINDINGS 3.5) costs ~40 cycles only when the load reads
+   bytes of the in-flight store (exact, inside, covering or partial
+   overlap); another word of the same line costs nothing.  A byte or
+   halfword store also catches a load that starts in its aligned word.
+   Return true if the store DEP_INSN and the load INSN provably overlap that
+   way: the same address, or the same base register with known offsets and
+   sizes.  A dependence alias analysis could not rule out (two different
+   pointers) is not charged.  */
+
+static bool
+xenon_lhs_overlap_p (rtx_insn *dep_insn, rtx_insn *insn)
+{
+  rtx st, ld;
+  if (!is_store_insn (dep_insn, &st) || !is_load_insn (insn, &ld)
+      || !MEM_P (st) || !MEM_P (ld))
+    return false;
+
+  rtx sbase, lbase;
+  HOST_WIDE_INT soff, ssize, loff, lsize;
+  if (!get_memref_parts (st, &sbase, &soff, &ssize)
+      || !get_memref_parts (ld, &lbase, &loff, &lsize))
+    /* Indexed or other address forms: only an identical address is known
+       to overlap.  */
+    return rtx_equal_p (XEXP (st, 0), XEXP (ld, 0));
+
+  if (REGNO (sbase) != REGNO (lbase))
+    return false;
+
+  if (ssize < 4)
+    {
+      /* Treat a sub-word store as covering its aligned word (relative to
+	 the base, which is word aligned in practice).  */
+      HOST_WIDE_INT start = soff & ~(HOST_WIDE_INT) 3;
+      HOST_WIDE_INT end = (soff + ssize + 3) & ~(HOST_WIDE_INT) 3;
+      soff = start;
+      ssize = end - start;
+    }
+  return soff < loff + lsize && loff < soff + ssize;
+}
+
+/* DEP_INSN is an update-form GPR load (lwzu ldu lbzu lhzu, +x): true if
+   INSN reads its updated base register and not the loaded value.  */
+
+static bool
+xenon_reads_update_base_only_p (rtx_insn *dep_insn, rtx_insn *insn)
+{
+  rtx pat = PATTERN (dep_insn);
+  if (GET_CODE (pat) != PARALLEL)
+    return false;
+  rtx value = NULL_RTX, base = NULL_RTX;
+  for (int i = 0; i < XVECLEN (pat, 0); i++)
+    {
+      rtx x = XVECEXP (pat, 0, i);
+      if (GET_CODE (x) != SET || !REG_P (SET_DEST (x)))
+	continue;
+      rtx src = SET_SRC (x);
+      if (GET_CODE (src) == PLUS
+	  && REG_P (XEXP (src, 0))
+	  && REGNO (XEXP (src, 0)) == REGNO (SET_DEST (x)))
+	base = SET_DEST (x);
+      else
+	value = SET_DEST (x);
+    }
+  return (value && base
+	  && reg_overlap_mentioned_p (base, PATTERN (insn))
+	  && !reg_overlap_mentioned_p (value, PATTERN (insn)));
+}
+
+/* Latency of the base register result of an update-form GPR load: an
+   integer add (LAT_LOAD_UPDATE_BASE), with the -mxenon-smt latency of the
+   integer classes.  */
+
+static int
+xenon_update_base_latency (void)
+{
+  switch (rs6000_xenon_smt_mode ())
+    {
+    case XENON_SMT_MODE_BUSY:
+      return XENON_LAT_LOAD_UPDATE_BASE_SMT_BUSY;
+    case XENON_SMT_MODE_SAME:
+      return XENON_LAT_LOAD_UPDATE_BASE_SMT_SAME;
+    default:
+      return XENON_LAT_LOAD_UPDATE_BASE;
+    }
+}
+
+/* TARGET_SCHED_ADJUST_COST for Xenon: the bypass quirks of FINDINGS 3.3-3.5
+   and 4 on top of the xenon.md latencies.  */
+
+static int
+rs6000_xenon_adjust_cost (rtx_insn *insn, int dep_type, rtx_insn *dep_insn,
+			  int cost)
+{
+  /* Output and anti dependencies cost nothing (as for the other CPUs).  */
+  if (dep_type != REG_DEP_TRUE)
+    return 0;
+
+  enum attr_type type = get_attr_type (insn);
+  enum attr_type dep = get_attr_type (dep_insn);
+  /* lvsl/lvsr are "vecload" but do no access.  */
+  bool load_p = (type == TYPE_LOAD || type == TYPE_FPLOAD
+		 || (type == TYPE_VECLOAD && !rs6000_xenon_lvsl_p (insn)));
+
+  /* Load-hit-store: a load that depends on a store through memory waits
+     ~40 cycles when it reads bytes of the in-flight store (FINDINGS 3.5).
+     A non-update store has no register result, so a true dependence on it
+     is a memory one; when the two accesses are not known to overlap it
+     keeps the ordinary store latency.  */
+  if (load_p
+      && (dep == TYPE_STORE || dep == TYPE_FPSTORE || dep == TYPE_VECSTORE)
+      && get_attr_update (dep_insn) == UPDATE_NO)
+    {
+      if (xenon_lhs_overlap_p (dep_insn, insn))
+	return (dep == TYPE_STORE ? XENON_LHS_GPR
+		: dep == TYPE_FPSTORE ? XENON_LHS_FPR : XENON_LHS_VR);
+      return cost;
+    }
+
+  /* The updated base of lwzu/ldu/... is an integer result, not a loaded
+     value: the class latency (LAT_LOAD) is the loaded register's.  The
+     lwzu same-register stream (1.66 per lwzu, each reading the base the
+     previous one wrote) shows the base is not a load latency and no
+     address-generation extra applies (XTS tput-lwzu confirms the value).
+     FP update loads keep their class latency: the lfdu same-register
+     stream is 10.7, so their base may be late.  Algebraic (microcoded)
+     update loads keep theirs too.  */
+  if (dep == TYPE_LOAD
+      && get_attr_update (dep_insn) == UPDATE_YES
+      && get_attr_sign_extend (dep_insn) == SIGN_EXTEND_NO
+      && xenon_reads_update_base_only_p (dep_insn, insn))
+    return MIN (cost, xenon_update_base_latency ());
+
+  switch (type)
+    {
+    case TYPE_JMPREG:
+      /* mtctr -> bctr: ~23 cycles unless 32 insns apart; mtlr -> blr ~20,
+	 never hidden (FINDINGS 4).  */
+      if (dep == TYPE_MTJMPR)
+	return xenon_sets_lr_p (dep_insn) ? XENON_BYP_MTLR_BLR
+					   : XENON_BYP_MTCTR_BCTR;
+      /* A conditional bclr/bcctr (beqlr ...) reads the CR like a bc.  */
+      gcc_fallthrough ();
+
+    case TYPE_BRANCH:
+      /* GPR compare -> branch is free; fcmpu -> bc +20.8; vcmp*. -> bc
+	 +1.7 (FINDINGS 3.3).  Both are "extra" figures of the bypass matrix
+	 (stall beyond the producer's ordinary forwarding), so both are added
+	 to the producer's latency.  */
+      if (dep == TYPE_FPCOMPARE)
+	return cost + XENON_BYP_FCMP_BRANCH_EXTRA;
+      if (rs6000_xenon_vec_predicate_p (dep_insn))
+	return cost + XENON_BYP_VCMP_BRANCH_EXTRA;
+      break;
+
+    case TYPE_LOAD:
+    case TYPE_STORE:
+    case TYPE_FPLOAD:
+    case TYPE_FPSTORE:
+    case TYPE_VECLOAD:
+    case TYPE_VECSTORE:
+      if (xenon_gpr_result_type_p (dep))
+	{
+	  bool agen = (load_p || type == TYPE_VECLOAD
+		       ? set_to_load_agen (dep_insn, insn)
+		       : !rs6000_store_data_bypass_p (dep_insn, insn));
+	  if (agen)
+	    {
+	      /* A loaded value used as an address: LAT_LOAD (5.03) is
+		 already the load-to-address latency (the pointer chase
+		 5.02-5.08 and the index chain 5.03-5.04 of FINDINGS 3.4/5
+		 measure exactly that), so no extra.  */
+	      if (dep == TYPE_LOAD || dep == TYPE_LOAD_L)
+		return cost;
+	      /* An ALU result: address generation reads its base ~2.5
+		 cycles early, an indexed address ~6.5; a vector access only
+		 ~0.5.  */
+	      if (type == TYPE_VECLOAD || type == TYPE_VECSTORE)
+		return cost + XENON_BYP_VEC_AGEN_EXTRA;
+	      if ((type == TYPE_LOAD || type == TYPE_STORE)
+		  && get_attr_indexed (insn) == INDEXED_YES)
+		return cost + XENON_BYP_AGEN_INDEXED_EXTRA;
+	      return cost + XENON_BYP_AGEN_EXTRA;
+	    }
+	  /* GPR result -> stw/std data: +2.7.  */
+	  if (type == TYPE_STORE)
+	    return cost + XENON_BYP_STORE_DATA_EXTRA;
+	}
+      else if (type == TYPE_FPSTORE
+	       && (dep == TYPE_FP || dep == TYPE_FPSIMPLE || dep == TYPE_DMUL
+		   || dep == TYPE_SDIV || dep == TYPE_DDIV
+		   || dep == TYPE_SSQRT || dep == TYPE_DSQRT)
+	       && rs6000_store_data_bypass_p (dep_insn, insn))
+	/* FP result -> stfd data: no stall at any distance.  */
+	return XENON_BYP_FP_STORE_DATA;
+      else if (type == TYPE_VECSTORE
+	       && (dep == TYPE_VECFLOAT || dep == TYPE_VECCOMPLEX))
+	/* VMX FP -> stvx data: full latency plus the cross-pipe extra.  */
+	return cost + XENON_BYP_VFP_CROSS_EXTRA;
+      break;
+
+    case TYPE_VECPERM:
+      /* lvx -> vperm control +8; a control vector built with lvsl/lvsr
+	 does not pay it (FINDINGS 3.3 recommends exactly that).  */
+      if (dep == TYPE_VECLOAD && !rs6000_xenon_lvsl_p (dep_insn)
+	  && xenon_feeds_vperm_control_p (dep_insn, insn))
+	return cost + XENON_BYP_LVX_VPERM_CTRL_EXTRA;
+      if (dep == TYPE_VECFLOAT || dep == TYPE_VECCOMPLEX)
+	return cost + XENON_BYP_VFP_CROSS_EXTRA;
+      break;
+
+    case TYPE_VECFLOAT:
+      /* VMX FP -> estimate (vrefp/vrsqrtefp) +1 (FINDINGS 3.3 measures it
+	 from vfp/vfma/vconv/vdot producers).  An estimate feeding an
+	 estimate is the dependent chain of FINDINGS 3.1 itself (vrefp,
+	 vrsqrtefp 14.0 per step = LAT_VEST), so it gets no extra.  */
+      if ((dep == TYPE_VECFLOAT || dep == TYPE_VECCOMPLEX)
+	  && rs6000_xenon_vest_p (insn)
+	  && !rs6000_xenon_vest_p (dep_insn))
+	return cost + XENON_BYP_VFP_CROSS_EXTRA;
+      break;
+
+    case TYPE_DIV:
+      if (xenon_gpr_result_type_p (dep))
+	return cost + XENON_BYP_INT_DIV_EXTRA;
+      break;
+
+    case TYPE_SDIV:
+    case TYPE_DDIV:
+      if (dep == TYPE_FPLOAD)
+	return cost + XENON_BYP_LFD_FDIV_EXTRA;
+      break;
+
+    default:
+      break;
+    }
+
+  return cost;
+}
+
+/* Delete GPR self-moves ("mr rN,rN" is "or rN,rN,rN").  On Xenon
+   "or 1,1,1" / "or 2,2,2" / "or 3,3,3" set the thread priority (low priority
+   issues one insn per 32 cycles, FINDINGS 7), so the compiler must never
+   emit them by accident; they are only ever wanted as volatile asm.  */
+
+static void
+rs6000_xenon_delete_self_moves (void)
+{
+  rtx_insn *insn, *next;
+  for (insn = get_insns (); insn; insn = next)
+    {
+      next = NEXT_INSN (insn);
+      if (!NONJUMP_INSN_P (insn))
+	continue;
+      rtx set = single_set (insn);
+      if (!set || GET_CODE (PATTERN (insn)) != SET)
+	continue;
+      rtx dest = SET_DEST (set), src = SET_SRC (set);
+      if (GET_CODE (src) == IOR && rtx_equal_p (XEXP (src, 0), XEXP (src, 1)))
+	src = XEXP (src, 0);
+      if (REG_P (dest) && REG_P (src)
+	  && INT_REGNO_P (REGNO (dest))
+	  && REGNO (dest) == REGNO (src)
+	  && GET_MODE_SIZE (GET_MODE (dest)) == GET_MODE_SIZE (GET_MODE (src)))
+	set_insn_deleted (insn);
+    }
+}
+
+/* Implement TARGET_MACHINE_DEPENDENT_REORG.  Xenon only: delete GPR
+   self-moves (a property of the hardware, so keyed on -mcpu=xenon whatever
+   the tuning), and, when tuning for Xenon, put the loop-top pad (an aligned
+   label plus one nop, see rs6000_label_align) in front of every loop label
+   rs6000_loop_align recorded for this function.  */
+
+static void
+rs6000_xenon_reorg (void)
+{
+  if (rs6000_cpu == PROCESSOR_XENON)
+    rs6000_xenon_delete_self_moves ();
+
+  if (rs6000_tune != PROCESSOR_XENON)
+    return;
+
+  if (xenon_loop_pad_fndecl != current_function_decl
+      || vec_safe_is_empty (xenon_loop_pad_labels))
+    return;
+
+  unsigned ix;
+  rtx label;
+  FOR_EACH_VEC_ELT (*xenon_loop_pad_labels, ix, label)
+    {
+      rtx_insn *l = as_a <rtx_insn *> (label);
+      /* The label may have been deleted since compute_alignments.  */
+      if (!LABEL_P (l) || l->deleted () || !PREV_INSN (l))
+	continue;
+      rtx_code_label *pad = gen_label_rtx ();
+      emit_label_before (pad, l);
+      LABEL_PRESERVE_P (pad) = 1;
+      emit_insn_before (gen_xenon_loop_pad (), l);
+    }
+  xenon_loop_pad_labels->truncate (0);
+  xenon_loop_pad_fndecl = NULL_TREE;
+}
+
+/* Implement TARGET_MAX_NOCE_IFCVT_SEQ_COST.  When tuning for Xenon the
+   branch-free sequence if-conversion may use instead of the branch on edge
+   E costs at most what the branch costs (FINDINGS 4, generated table):
+   XENON_BR_UNPREDICTABLE_CYCLES for an unpredictable branch (half a
+   mispredict plus a not-taken branch), XENON_BR_PREDICTABLE_CYCLES for a
+   predictable one (average of taken and not-taken), in the insn-cost units
+   of XENON_COSTS.  An explicit --param max-rtl-if-conversion-*-cost and
+   every other CPU keep the default (BRANCH_COST * COSTS_N_INSNS (3)).  */
+
+static unsigned int
+rs6000_max_noce_ifcvt_seq_cost (edge e)
+{
+  if (rs6000_tune != PROCESSOR_XENON)
+    return default_max_noce_ifcvt_seq_cost (e);
+
+  bool predictable_p = predictable_edge_p (e);
+  if (predictable_p
+      ? OPTION_SET_P (param_max_rtl_if_conversion_predictable_cost)
+      : OPTION_SET_P (param_max_rtl_if_conversion_unpredictable_cost))
+    return default_max_noce_ifcvt_seq_cost (e);
+
+  return XENON_COSTS (predictable_p ? XENON_BR_PREDICTABLE_CYCLES
+				    : XENON_BR_UNPREDICTABLE_CYCLES);
+}
+
 /* Adjust the cost of a scheduling dependency.  Return the new cost of
    a dependency LINK or INSN on DEP_INSN.  COST is the current cost.  */
 
@@ -18367,6 +20321,9 @@ rs6000_adjust_cost (rtx_insn *insn, int dep_type, rtx_insn *dep_insn, int cost,
 
   if (recog_memoized (insn) < 0 || recog_memoized (dep_insn) < 0)
     return cost;
+
+  if (rs6000_tune == PROCESSOR_XENON)
+    return rs6000_xenon_adjust_cost (insn, dep_type, dep_insn, cost);
 
   switch (dep_type)
     {
@@ -18665,6 +20622,9 @@ is_microcoded_insn (rtx_insn *insn)
   if (rs6000_tune == PROCESSOR_CELL)
     return get_attr_cell_micro (insn) == CELL_MICRO_ALWAYS;
 
+  if (rs6000_tune == PROCESSOR_XENON)
+    return get_attr_xenon_micro (insn) == XENON_MICRO_ALWAYS;
+
   if (rs6000_sched_groups
       && (rs6000_tune == PROCESSOR_POWER4 || rs6000_tune == PROCESSOR_POWER5))
     {
@@ -18957,6 +20917,17 @@ rs6000_issue_rate (void)
     return 1;
 
   switch (rs6000_tune) {
+  case PROCESSOR_XENON:
+    /* Generated parameter (xenon-costs.def); kept apart from the other
+       two-issue CPUs so a Xenon-only change cannot retune them.  It is the
+       number of slots of one issue cycle of this thread for every
+       -mxenon-smt mode: with a busy sibling (or one running the same code)
+       the threads alternate issue cycles, which xenon.md models by giving
+       the sibling the cycle after each issue cycle (xenon_smt<N>_issue*)
+       and scaling unit occupancy, since a lower rate here would slow
+       different-group pairs only x1.5 and same-group code not at all
+       against the x1.9 FINDINGS 7 measures for every class.  */
+    return XENON_ISSUE_RATE;
   case PROCESSOR_RS64A:
   case PROCESSOR_PPC601: /* ? */
   case PROCESSOR_PPC7450:
@@ -19013,6 +20984,10 @@ rs6000_use_sched_lookahead (void)
 
     case PROCESSOR_CELL:
       return (reload_completed ? 8 : 0);
+
+    /* Xenon: let the DFA lookahead choose pairable insns (xenon.md).  */
+    case PROCESSOR_XENON:
+      return (reload_completed ? 4 : 0);
 
     default:
       return 0;
@@ -22502,6 +24477,15 @@ rs6000_rtx_costs (rtx x, machine_mode mode, int outer_code,
       return false;
 
     case MULT:
+      /* Xenon integer vector multiplies are exact single-precision
+	 sequences (TARGET_XENON_VMUL_SEQ, altivec.md); cost them as their
+	 instruction count, so expand_mult synthesizes a multiply by a
+	 constant from shifts and adds whenever that is shorter.  */
+      if (TARGET_XENON_VMUL_SEQ && rs6000_xenon_vmul_insns (mode) > 0)
+	{
+	  *total = COSTS_N_INSNS (rs6000_xenon_vmul_insns (mode));
+	  return false;
+	}
       if (CONST_INT_P (XEXP (x, 1))
 	  && satisfies_constraint_I (XEXP (x, 1)))
 	{
@@ -22669,6 +24653,11 @@ rs6000_rtx_costs (rtx x, machine_mode mode, int outer_code,
 	}
       else if (outer_code == AND)
 	*total = 0;
+      /* Xenon: shifts and rotates by a register are microcoded (16 cycles,
+	 FINDINGS 2.3); by an immediate they are simple ALU ops.  */
+      else if (rs6000_tune == PROCESSOR_XENON
+	       && !CONST_INT_P (XEXP (x, 1)))
+	*total = XENON_COSTS (XENON_ISS_VARSHIFT);
       else
 	*total = COSTS_N_INSNS (1);
       return false;
@@ -22830,6 +24819,17 @@ rs6000_insn_cost (rtx_insn *insn, bool speed)
 
   enum attr_type type = get_attr_type (insn);
 
+  /* Xenon: a microcoded insn costs its issue cycles (xenon_issue, from the
+     findings): record forms 14-16, andi. 14, variable shifts 16, algebraic
+     loads 24, mfcr 26, fcmpu 16 ..., on the same scale as the rtx costs
+     (XENON_COSTS: one 2-cycle add = COSTS_N_INSNS (1)).  So combine keeps
+     "op" + "cmpwi" instead of the record form, immediate shifts beat
+     variable ones and lhz + extsh beats lha.  mul/div issue cycles give the
+     values of the cost table.  */
+  if (rs6000_tune == PROCESSOR_XENON
+      && get_attr_xenon_micro (insn) == XENON_MICRO_ALWAYS)
+    return MAX (XENON_COSTS (get_attr_xenon_issue (insn)), COSTS_N_INSNS (n));
+
   switch (type)
     {
     case TYPE_LOAD:
@@ -22969,6 +24969,13 @@ rs6000_register_move_cost (machine_mode mode,
   else if (to == DMR_REGS)
     ret = rs6000_dmr_register_move_cost (mode, from);
 
+  /* Xenon VMX128: any two of v0-v127 are one vor128 apart.  As above, give
+     the best case for union classes that contain vector registers.  */
+  else if (TARGET_VMX128
+	   && reg_classes_intersect_p (to, VMX128_REGS)
+	   && reg_classes_intersect_p (from, VMX128_REGS))
+    ret = 2 * hard_regno_nregs (FIRST_ALTIVEC_REGNO, mode);
+
   else if (!hard_reg_set_empty_p (to_vsx)
 	   && !hard_reg_set_empty_p (from_vsx)
 	   && (TARGET_VSX
@@ -22986,7 +24993,8 @@ rs6000_register_move_cost (machine_mode mode,
   else if ((rclass = from, reg_classes_intersect_p (to, GENERAL_REGS))
 	   || (rclass = to, reg_classes_intersect_p (from, GENERAL_REGS)))
     {
-      if (rclass == FLOAT_REGS || rclass == ALTIVEC_REGS || rclass == VSX_REGS)
+      if (rclass == FLOAT_REGS || rclass == ALTIVEC_REGS || rclass == VSX_REGS
+	  || (TARGET_VMX128 && VMX128_REG_CLASS_P (rclass)))
 	{
 	  if (TARGET_DIRECT_MOVE)
 	    {
@@ -23007,6 +25015,14 @@ rs6000_register_move_cost (machine_mode mode,
 	      if (mode == SFmode)
 		ret += 2;
 	    }
+	  /* Xenon: no direct path; the store -> load round trip costs ~40
+	     cycles (load-hit-store, FINDINGS 3.5), so keep values in one
+	     register file.  */
+	  else if (rs6000_tune == PROCESSOR_XENON)
+	    ret = MAX ((rclass == ALTIVEC_REGS || VMX128_REG_CLASS_P (rclass)
+			? (int) XENON_XFER_GPR_VR : (int) XENON_XFER_GPR_FPR),
+		       rs6000_memory_move_cost (mode, rclass, false)
+		       + rs6000_memory_move_cost (mode, GENERAL_REGS, false));
 	  else
 	    ret = (rs6000_memory_move_cost (mode, rclass, false)
 		   + rs6000_memory_move_cost (mode, GENERAL_REGS, false));
@@ -23030,6 +25046,24 @@ rs6000_register_move_cost (machine_mode mode,
 	/* A move will cost one instruction per GPR moved.  */
 	ret = 2 * hard_regno_nregs (FIRST_GPR_REGNO, mode);
     }
+
+  /* Xenon: FPR <-> VR goes through memory, ~40 cycles (FINDINGS 3.5).  */
+  else if (rs6000_tune == PROCESSOR_XENON
+	   && !hard_reg_set_empty_p (to_vsx)
+	   && !hard_reg_set_empty_p (from_vsx))
+    ret = XENON_XFER_FPR_VR;
+
+  /* The same for the VMX128 registers v32-v127 (which are outside
+     VSX_REGS).  */
+  else if (TARGET_VMX128
+	   && ((reg_classes_intersect_p (to, FLOAT_REGS)
+		&& reg_classes_intersect_p (from, VMX128_REGS))
+	       || (reg_classes_intersect_p (from, FLOAT_REGS)
+		   && reg_classes_intersect_p (to, VMX128_REGS))))
+    ret = (rs6000_tune == PROCESSOR_XENON
+	   ? (int) XENON_XFER_FPR_VR
+	   : (rs6000_memory_move_cost (mode, FLOAT_REGS, false)
+	      + rs6000_memory_move_cost (mode, VMX128_REGS, false)));
 
   /* Everything else has to go through GENERAL_REGS.  */
   else
@@ -23066,6 +25100,12 @@ rs6000_memory_move_cost (machine_mode mode, reg_class_t rclass,
   else if ((reg_classes_intersect_p (rclass, FLOAT_REGS)
 	    || reg_classes_intersect_p (rclass, VSX_REGS)))
     ret = 4 * hard_regno_nregs (32, mode);
+  /* The Xenon VMX128 registers v32-v127 are outside VSX_REGS.  Give them the
+     cost v0-v31 get from the test above (ALTIVEC_REGS intersects
+     VSX_REGS), so that saving or spilling a high register does not look
+     cheaper than a low one.  */
+  else if (TARGET_VMX128 && reg_classes_intersect_p (rclass, VMX128_REGS))
+    ret = 4 * hard_regno_nregs (FIRST_FPR_REGNO, mode);
   else if (reg_classes_intersect_p (rclass, ALTIVEC_REGS))
     ret = 4 * hard_regno_nregs (FIRST_ALTIVEC_REGNO, mode);
   else if (reg_classes_intersect_p (rclass, DMR_REGS))
@@ -23124,6 +25164,7 @@ rs6000_ira_change_pseudo_allocno_class (int regno ATTRIBUTE_UNUSED,
 			   || best_class == GEN_OR_FLOAT_REGS
 			   || best_class == VSX_REGS
 			   || best_class == ALTIVEC_REGS
+			   || best_class == VC128_REGS
 			   || best_class == FLOAT_REGS
 			   || best_class == GENERAL_REGS
 			   || best_class == BASE_REGS);
@@ -23134,11 +25175,36 @@ rs6000_ira_change_pseudo_allocno_class (int regno ATTRIBUTE_UNUSED,
 	return GENERAL_REGS;
       if (TARGET_VSX && best_class == FLOAT_REGS)
 	return VSX_REGS;
+      /* Xenon VMX128 (no VSX): v0-v31 widen to v0-v127, see
+	 GEN_OR_VMX128_REGS below.  */
+      if (TARGET_VMX128
+	  && (best_class == ALTIVEC_REGS || best_class == VC128_REGS))
+	return VMX128_REGS;
       return best_class;
 
     case VSX_REGS:
       if (best_class == ALTIVEC_REGS)
 	return ALTIVEC_REGS;
+      break;
+
+    /* Xenon VMX128: the same reasoning as for GEN_OR_VSX_REGS.  A vector
+       best class widens to VMX128_REGS, since a copy between any two of
+       v0-v127 is one vor128: a value whose instructions want v0-v31 can
+       then still live in v32-v127 rather than in memory.  */
+    case GEN_OR_VMX128_REGS:
+      gcc_checking_assert (best_class == GEN_OR_VMX128_REGS
+			   || best_class == VC128_REGS
+			   || best_class == ALTIVEC_REGS
+			   || best_class == VMX128_HI_REGS
+			   || best_class == VMX128_REGS
+			   || best_class == GENERAL_REGS
+			   || best_class == BASE_REGS);
+      if (best_class == BASE_REGS)
+	return GENERAL_REGS;
+      if (best_class == VC128_REGS || best_class == ALTIVEC_REGS
+	  || best_class == VMX128_HI_REGS)
+	return VMX128_REGS;
+      return best_class;
 
     default:
       break;
@@ -24270,7 +26336,9 @@ rs6000_compute_pressure_classes (enum reg_class *pressure_classes)
 
   n = 0;
   pressure_classes[n++] = GENERAL_REGS;
-  if (TARGET_ALTIVEC)
+  if (TARGET_VMX128)
+    pressure_classes[n++] = VMX128_REGS;
+  else if (TARGET_ALTIVEC)
     pressure_classes[n++] = ALTIVEC_REGS;
   if (TARGET_VSX)
     pressure_classes[n++] = VSX_REGS;
@@ -24344,6 +26412,33 @@ rs6000_initial_elimination_offset (int from, int to)
 static void
 rs6000_init_dwarf_reg_sizes_extra (tree address)
 {
+  /* The Xenon VMX128 registers v32-v127 are 16 bytes whatever the
+     options libgcc is compiled with (without -mvmx128 they hold no mode).
+     Only targets whose unwinder has columns for them (DWARF_FRAME_REGISTERS
+     above their .eh_frame numbers 120-215, rs6000/xenon64.h) are
+     affected.  */
+  {
+    machine_mode mode = TYPE_MODE (char_type_node);
+    rtx addr = NULL_RTX;
+    rtx mem = NULL_RTX;
+    rtx value = gen_int_mode (16, mode);
+
+    for (int i = FIRST_VMX128_HI_REGNO; i <= LAST_VMX128_HI_REGNO; i++)
+      {
+	unsigned int column = DWARF_REG_TO_UNWIND_COLUMN
+	  (DWARF2_FRAME_REG_OUT (DWARF_FRAME_REGNUM (i), true));
+	if (column >= DWARF_FRAME_REGISTERS)
+	  continue;
+	if (mem == NULL_RTX)
+	  {
+	    addr = expand_expr (address, NULL_RTX, VOIDmode, EXPAND_NORMAL);
+	    mem = gen_rtx_MEM (BLKmode, addr);
+	  }
+	HOST_WIDE_INT offset = column * GET_MODE_SIZE (mode);
+	emit_move_insn (adjust_address (mem, mode, offset), value);
+      }
+  }
+
   if (TARGET_MACHO && ! TARGET_ALTIVEC)
     {
       int i;
@@ -24386,6 +26481,9 @@ rs6000_debugger_regno (unsigned int regno, unsigned int format)
 	return regno - FIRST_FPR_REGNO + 32;
       if (ALTIVEC_REGNO_P (regno))
 	return regno - FIRST_ALTIVEC_REGNO + 1124;
+      /* Xenon VMX128 v32-v127 continue the vector block: 1156-1251.  */
+      if (VMX128_HI_REGNO_P (regno))
+	return regno - FIRST_VMX128_HI_REGNO + 1156;
       if (regno == LR_REGNO)
 	return 108;
       if (regno == CTR_REGNO)
@@ -24450,6 +26548,11 @@ rs6000_debugger_regno (unsigned int regno, unsigned int format)
      later.  */
   if (DMR_REGNO_P (regno))
     return regno - FIRST_DMR_REGNO + 112;
+
+  /* Xenon VMX128 v32-v127: after the DMRs, 120-215.  These are beyond
+     DWARF_FRAME_REGISTERS (119), see rs6000.h.  */
+  if (VMX128_HI_REGNO_P (regno))
+    return regno - FIRST_VMX128_HI_REGNO + 120;
 
   gcc_unreachable ();
 }
@@ -24711,6 +26814,7 @@ static struct rs6000_opt_mask const rs6000_opt_masks[] =
   { "save-toc-indirect",	OPTION_MASK_SAVE_TOC_INDIRECT,	false, true  },
   { "string",			0,				false, true  },
   { "update",			OPTION_MASK_NO_UPDATE,		true , true  },
+  { "vmx128",			OPTION_MASK_VMX128,		false, true  },
   { "vsx",			OPTION_MASK_VSX,		false, true  },
 #ifdef OPTION_MASK_64BIT
 #if TARGET_AIX_OS
@@ -24737,6 +26841,79 @@ static struct rs6000_opt_mask const rs6000_opt_masks[] =
   { "soft-float",		OPTION_MASK_SOFT_FLOAT,		false, false },
   { "string",			0,				false, false },
 };
+
+/* ISA option masks whose instructions the Xenon PPE does not implement
+   (plan D3/D6: the compiler may only emit instructions listed in
+   isa/findings_instructions.csv).  -mcpu=xenon turns none of them on; this
+   catches explicit -m<flag> options and target attributes/pragmas.
+   popcntb (POPCNTB), fre/frsqrtes (POPCNTB, VSX), isel (ISEL), cmpb, the
+   fri* roundings (FPRND), DFP, the 440 multiply-accumulate (MULHW), dlmzb,
+   VSX and everything from ISA 2.06 on are all absent.  */
+#define XENON_UNSUPPORTED_MASKS						\
+  (OPTION_MASK_POPCNTB | OPTION_MASK_POPCNTD | OPTION_MASK_FPRND	\
+   | OPTION_MASK_CMPB | OPTION_MASK_DFP | OPTION_MASK_MULHW		\
+   | OPTION_MASK_DLMZB | OPTION_MASK_ISEL | OPTION_MASK_VSX		\
+   | OPTION_MASK_EFFICIENT_UNALIGNED_VSX				\
+   | OPTION_MASK_BLOCK_OPS_UNALIGNED_VSX				\
+   | OPTION_MASK_BLOCK_OPS_VECTOR_PAIR | OPTION_MASK_P8_VECTOR		\
+   | OPTION_MASK_CRYPTO | OPTION_MASK_HTM | OPTION_MASK_QUAD_MEMORY	\
+   | OPTION_MASK_QUAD_MEMORY_ATOMIC | OPTION_MASK_POWER8		\
+   | OPTION_MASK_P9_MISC | OPTION_MASK_P9_VECTOR | OPTION_MASK_P9_MINMAX	\
+   | OPTION_MASK_MODULO | OPTION_MASK_FLOAT128_HW | OPTION_MASK_POWER10	\
+   | OPTION_MASK_POWER11 | OPTION_MASK_FUTURE | OPTION_MASK_PREFIXED	\
+   | OPTION_MASK_PCREL | OPTION_MASK_PCREL_OPT | OPTION_MASK_MMA	\
+   | OPTION_MASK_DMF)
+
+/* Called from rs6000_option_override_internal when the cpu is the Xenon
+   PPE, right after the -mcpu flags have been applied: give an error for
+   each explicitly requested ISA extension that Xenon lacks, and turn all of
+   them off.  Marking them explicit keeps the ISA-level implications later
+   in rs6000_option_override_internal from switching them back on.  */
+
+static void
+rs6000_xenon_check_isa_flags (void)
+{
+  HOST_WIDE_INT bad = rs6000_isa_flags & XENON_UNSUPPORTED_MASKS;
+  HOST_WIDE_INT reported = 0;
+
+  /* -mrecip-precision says fres/frsqrte deliver at least 14 bits, so the
+     -mrecip Newton-Raphson sequences take fewer steps.  Xenon's fres keeps 8
+     bits and frsqrte 9 (FINDINGS 1.2, architected bound 2^-5), so the
+     results would be silently inaccurate: refuse an explicit request and
+     never turn it on implicitly.  */
+  if ((rs6000_isa_flags & rs6000_isa_flags_explicit
+       & OPTION_MASK_RECIP_PRECISION) != 0)
+    error ("%<-mrecip-precision%> is not supported by %<-mcpu=xenon%>: the "
+	   "Xenon PPE %<fres%> and %<frsqrte%> estimates are only accurate "
+	   "to 8 and 9 bits");
+  rs6000_isa_flags &= ~OPTION_MASK_RECIP_PRECISION;
+  rs6000_isa_flags_explicit |= OPTION_MASK_RECIP_PRECISION;
+
+  if (bad == 0)
+    return;
+
+  for (size_t i = 0; i < ARRAY_SIZE (rs6000_opt_masks); i++)
+    {
+      HOST_WIDE_INT mask = rs6000_opt_masks[i].mask;
+      if (mask == 0
+	  || rs6000_opt_masks[i].invert
+	  || (bad & mask) == 0
+	  || (rs6000_isa_flags_explicit & mask) == 0
+	  || (reported & mask) != 0)
+	continue;
+      error ("%<-m%s%> is not supported by %<-mcpu=xenon%>: the Xenon PPE "
+	     "does not implement its instructions", rs6000_opt_masks[i].name);
+      reported |= mask;
+    }
+
+  /* Flags without a user-visible option name, or turned on only as an
+     implication of an explicit one.  */
+  if ((bad & rs6000_isa_flags_explicit & ~reported) != 0)
+    error ("the selected ISA options are not supported by %<-mcpu=xenon%>");
+
+  rs6000_isa_flags &= ~bad;
+  rs6000_isa_flags_explicit |= bad;
+}
 
 /* Option variables that we want to support inside attribute((target)) and
    #pragma GCC target operations.  */
@@ -25163,6 +27340,20 @@ rs6000_pragma_target_parse (tree args, tree pop_target)
 	  /* Define new macros.  */
 	  rs6000_target_modify_macros_ptr (true,
 					   cur_flags & diff_flags);
+	}
+
+      /* The cpu-keyed macros (__PPU__, _ARCH_XENON, __VMX128__) follow the
+	 cpu of each option node, which can change while the ISA flags do not
+	 (cpu=cell <-> cpu=xenon).  Undefine the old set and define the new
+	 one whenever the cpu, AltiVec or VMX128 changes.  */
+      enum processor_type prev_cpu = prev_opt->x_rs6000_cpu;
+      enum processor_type cur_cpu = cur_opt->x_rs6000_cpu;
+      if (rs6000_target_modify_cpu_macros_ptr
+	  && (prev_cpu != cur_cpu
+	      || (diff_flags & (OPTION_MASK_ALTIVEC | OPTION_MASK_VMX128)) != 0))
+	{
+	  rs6000_target_modify_cpu_macros_ptr (false, prev_cpu, prev_flags);
+	  rs6000_target_modify_cpu_macros_ptr (true, cur_cpu, cur_flags);
 	}
     }
 
@@ -26991,7 +29182,11 @@ reg_to_non_prefixed (rtx reg, machine_mode mode)
 
   /* Altivec registers use DS-mode for scalars, and DQ-mode for vectors, IEEE
      128-bit floating point, and 128-bit integers.  Before power9, only indexed
-     addressing was available.  */
+     addressing was available.  The Xenon VMX128 registers are like the
+     pre-power9 ones.  */
+  else if (VMX128_HI_REGNO_P (r))
+    return NON_PREFIXED_X;
+
   else if (ALTIVEC_REGNO_P (r))
     {
       if (!TARGET_P9_VECTOR)
@@ -27634,7 +29829,7 @@ rs6000_split_multireg_move (rtx dst, rtx src)
   else if (FP_REGNO_P (reg))
     reg_mode = DECIMAL_FLOAT_MODE_P (mode) ? DDmode :
 	(TARGET_HARD_FLOAT ? DFmode : SFmode);
-  else if (ALTIVEC_REGNO_P (reg))
+  else if (ALTIVEC_REGNO_P (reg) || VMX128_HI_REGNO_P (reg))
     reg_mode = V16QImode;
   else
     reg_mode = word_mode;

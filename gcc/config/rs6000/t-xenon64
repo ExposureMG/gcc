@@ -1,0 +1,30 @@
+# Makefile fragment for 64-bit PowerPC bare-metal ELF targets
+# (powerpc64-xenon-elf, powerpc64-*-elf).
+#
+# Copyright (C) 2026 Free Software Foundation, Inc.
+#
+# This file is part of GCC.
+#
+# GCC is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3, or (at your option)
+# any later version.
+#
+# GCC is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with GCC; see the file COPYING3.  If not see
+# <http://www.gnu.org/licenses/>.
+
+# A single 64-bit (-m64, ELFv1) variant for now.  A 32-bit multilib is
+# planned later; it would be added here as
+#   MULTILIB_OPTIONS  = m32
+#   MULTILIB_DIRNAMES = 32
+# (MULTILIB_DEFAULTS in xenon64.h already lists m64).
+MULTILIB_OPTIONS	=
+MULTILIB_DIRNAMES	=
+MULTILIB_MATCHES	=
+MULTILIB_EXCEPTIONS	=

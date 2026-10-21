@@ -99,7 +99,8 @@
 
 /* Flags that need to be turned off if -mno-altivec.  */
 #define OTHER_ALTIVEC_MASKS	(OTHER_VSX_VECTOR_MASKS			\
-				 | OPTION_MASK_VSX)
+				 | OPTION_MASK_VSX			\
+				 | OPTION_MASK_VMX128)
 
 #define POWERPC_7400_MASK	(OPTION_MASK_PPC_GFXOPT | OPTION_MASK_ALTIVEC)
 
@@ -155,6 +156,7 @@
 				 | OPTION_MASK_RECIP_PRECISION		\
 				 | OPTION_MASK_SOFT_FLOAT		\
 				 | OPTION_MASK_STRICT_ALIGN_OPTIONAL	\
+				 | OPTION_MASK_VMX128			\
 				 | OPTION_MASK_VSX)
 
 #endif
@@ -227,6 +229,16 @@ RS6000_CPU ("970", PROCESSOR_POWER4, POWERPC_7400_MASK | OPTION_MASK_PPC_GPOPT
 	    | OPTION_MASK_MFCRF | MASK_POWERPC64)
 RS6000_CPU ("cell", PROCESSOR_CELL, POWERPC_7400_MASK  | OPTION_MASK_PPC_GPOPT
 	    | OPTION_MASK_MFCRF | MASK_POWERPC64)
+/* Xbox 360 Xenon PPE.  The ISA flags are the Cell PPU ones: AltiVec (plus
+   VMX128, whose registers v32-v127 are OPTION_MASK_VMX128 and whose
+   instructions are keyed on PROCESSOR_XENON), fsel/fres/frsqrte/stfiwx
+   (GFXOPT), fsqrt (GPOPT),
+   mfocrf/mtocrf (MFCRF), 64-bit.  Deliberately not POPCNTB (popcntb, and
+   through it fre/frsqrtes, are hardware-illegal), not FPRND, CMPB, ISEL,
+   POPCNTD, DFP, VSX: none of those instructions are in the Xenon allow-list
+   (isa/findings_instructions.csv).  */
+RS6000_CPU ("xenon", PROCESSOR_XENON, POWERPC_7400_MASK | OPTION_MASK_PPC_GPOPT
+	    | OPTION_MASK_MFCRF | MASK_POWERPC64 | OPTION_MASK_VMX128)
 RS6000_CPU ("ec603e", PROCESSOR_PPC603, OPTION_MASK_SOFT_FLOAT)
 RS6000_CPU ("G3", PROCESSOR_PPC750, OPTION_MASK_PPC_GFXOPT)
 RS6000_CPU ("G4",  PROCESSOR_PPC7450, POWERPC_7400_MASK)

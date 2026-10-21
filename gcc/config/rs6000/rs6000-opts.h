@@ -68,7 +68,8 @@ enum processor_type
    PROCESSOR_MPCCORE,
    PROCESSOR_CELL,
    PROCESSOR_PPCA2,
-   PROCESSOR_TITAN
+   PROCESSOR_TITAN,
+   PROCESSOR_XENON
 };
 
 /* Make -mtune=future use the same tuning decisions as -mtune=power11.  */
@@ -122,6 +123,16 @@ enum  rs6000_traceback_type {
   traceback_none,
   traceback_part,
   traceback_full
+};
+
+/* -mxenon-smt=: what the sibling hardware thread of the Xenon core does
+   while the compiled code runs (plan 5.4, FINDINGS 7).  Only used when
+   tuning for Xenon.  The order must match the "xenon_smt" attribute of
+   xenon.md (rs6000.cc checks it).  */
+enum rs6000_xenon_smt_mode {
+  XENON_SMT_MODE_IDLE = 0,	/* Sibling idle or parked (default).  */
+  XENON_SMT_MODE_BUSY,		/* Sibling running a throughput-bound kernel.  */
+  XENON_SMT_MODE_SAME		/* Sibling running the same code.  */
 };
 
 /* Code model for 64-bit linux.

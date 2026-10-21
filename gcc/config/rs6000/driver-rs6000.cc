@@ -470,6 +470,7 @@ static const struct asm_name asm_names[] = {
 
 #else
   { "cell",	"-mcell" },
+  { "xenon",	"-mxenon" },
   { "power3",	"-mppc64" },
   { "power4",	"-mpower4" },
   { "power5",	"-mpower5" },

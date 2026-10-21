@@ -583,9 +583,10 @@ rs6000_target_modify_macros (bool define_p, HOST_WIDE_INT flags)
   if ((flags & OPTION_MASK_FLOAT128_HW) != 0)
     rs6000_define_or_undefine_macro (define_p, "__FLOAT128_HARDWARE__");
 
-  /* Tell the user if we are targeting CELL.  */
-  if (rs6000_cpu == PROCESSOR_CELL)
-    rs6000_define_or_undefine_macro (define_p, "__PPU__");
+  /* The macros keyed on the processor (__PPU__, _ARCH_XENON, __VMX128__)
+     are handled by rs6000_target_modify_cpu_macros: a "#pragma GCC target"
+     can change the cpu without changing any ISA flag (cell <-> xenon), so
+     they cannot be driven by the changed ISA flags alone.  */
 
   /* Tell the user if we support the MMA instructions.  */
   if ((flags & OPTION_MASK_MMA) != 0)
@@ -603,11 +604,49 @@ rs6000_target_modify_macros (bool define_p, HOST_WIDE_INT flags)
 				     "__SET_FPSCR_RN_RETURNS_FPSCR__");
 }
 
+/* Define or undefine the macros that depend on the processor CPU (with the
+   ISA flags FLAGS that go with it).  rs6000_pragma_target_parse calls this
+   with the previous cpu/flags (undefine) and the new ones (define) whenever
+   either the cpu or the AltiVec flag changes.  */
+
+void
+rs6000_target_modify_cpu_macros (bool define_p, enum processor_type cpu,
+				 HOST_WIDE_INT flags)
+{
+  if (TARGET_DEBUG_BUILTIN || TARGET_DEBUG_TARGET)
+    fprintf (stderr,
+	     "rs6000_target_modify_cpu_macros (%s, %d, "
+	     HOST_WIDE_INT_PRINT_HEX ")\n",
+	     (define_p) ? "define" : "undef", (int) cpu, flags);
+
+  /* Tell the user if we are targeting CELL.  */
+  if (cpu == PROCESSOR_CELL)
+    rs6000_define_or_undefine_macro (define_p, "__PPU__");
+
+  /* Tell the user if we are targeting the Xbox 360 Xenon PPE.  __VMX128__
+     says the VMX128 extension (v0-v127 and the *128 instructions) is usable,
+     so it follows OPTION_MASK_VMX128 (-mcpu=xenon with AltiVec, unless
+     -mno-vmx128), which the compiler also uses to allocate v32-v127.  __XENON__ is
+     defined by the powerpc64-xenon-* target itself (TARGET_OS_CPP_BUILTINS,
+     xenon64.h); only define it here for other targets, so that switching
+     the cpu with a target pragma/attribute cannot undefine it there.  */
+  if (cpu == PROCESSOR_XENON)
+    {
+      rs6000_define_or_undefine_macro (define_p, "_ARCH_XENON");
+#if !defined (TARGET_XENON_OS) || !TARGET_XENON_OS
+      rs6000_define_or_undefine_macro (define_p, "__XENON__");
+#endif
+      if ((flags & OPTION_MASK_VMX128) != 0)
+	rs6000_define_or_undefine_macro (define_p, "__VMX128__");
+    }
+}
+
 void
 rs6000_cpu_cpp_builtins (cpp_reader *pfile)
 {
   /* Define all of the common macros.  */
   rs6000_target_modify_macros (true, rs6000_isa_flags);
+  rs6000_target_modify_cpu_macros (true, rs6000_cpu, rs6000_isa_flags);
 
   if (TARGET_FRE)
     builtin_define ("__RECIP__");
@@ -948,6 +987,12 @@ altivec_build_resolved_builtin (tree *args, int n, tree fntype, tree ret_type,
       break;
     case 4:
       call = build_call_expr (fndecl, 4, args[0], args[1], args[2], args[3]);
+      break;
+    case 5:
+      /* The Xenon __builtin_xenon_vpkd3d is the only five-argument
+	 overload.  */
+      call = build_call_expr (fndecl, 5, args[0], args[1], args[2], args[3],
+			      args[4]);
       break;
     case 6:
       call = build_call_expr (fndecl, 6, args[0], args[1], args[2], args[3],
