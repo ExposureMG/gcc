@@ -57,3 +57,7 @@
 	addi	1,1,16
 	blr
 #endif
+
+/* No executable stack (ld defaults to one for ELF32 objects without
+   this note).  */
+	.section .note.GNU-stack,"",@progbits

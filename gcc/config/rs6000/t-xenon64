@@ -19,12 +19,12 @@
 # along with GCC; see the file COPYING3.  If not see
 # <http://www.gnu.org/licenses/>.
 
-# A single 64-bit (-m64, ELFv1) variant for now.  A 32-bit multilib is
-# planned later; it would be added here as
-#   MULTILIB_OPTIONS  = m32
-#   MULTILIB_DIRNAMES = 32
-# (MULTILIB_DEFAULTS in xenon64.h already lists m64).
-MULTILIB_OPTIONS	=
-MULTILIB_DIRNAMES	=
+# Two variants: 64-bit (-m64, ELFv1, the default; MULTILIB_DEFAULTS in
+# xenon64.h lists m64) in the plain library directories, and 32-bit
+# (-m32, SysV ABI, built with -mcpu=xenon and so with -mpowerpc64) in the
+# "32" subdirectories, the layout of the old Xenon toolchain, whose
+# libxenon is built -m32.
+MULTILIB_OPTIONS	= m32
+MULTILIB_DIRNAMES	= 32
 MULTILIB_MATCHES	=
 MULTILIB_EXCEPTIONS	=

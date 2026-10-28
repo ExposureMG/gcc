@@ -384,7 +384,9 @@ GLUE(.L,name): \
 #endif
 #endif
 
-#if defined __linux__ && !defined __powerpc64__
+/* Xenon: the -m32 multilib of powerpc64-xenon-elf links with elf32ppc,
+   whose ld defaults to an executable stack (and warns) without the note.  */
+#if (defined __linux__ || defined __XENON__) && !defined __powerpc64__
 	.section .note.GNU-stack
 	.previous
 #endif

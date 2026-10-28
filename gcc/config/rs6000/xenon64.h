@@ -31,8 +31,10 @@
    statically.  The C library is newlib; the board support library
    (libxenon) supplies crt0.o and the system calls.
 
-   -m64 is the default.  Nothing here prevents a later -m32 multilib: the
-   32-bit side keeps the SysV (ABI_V4) conventions of rs6000/sysv4.h.  */
+   -m64 is the default.  -m32 is a multilib (libxenon is built -m32
+   -mpowerpc64): it uses the 32-bit SysV (ABI_V4) conventions of
+   rs6000/sysv4.h, with structures returned in memory and the <stdint.h>
+   types of the existing -m32 Xenon libraries (see below).  */
 
 /* gnu-user.h is only included because rs6000/sysv4.h refers to its spec
    macros.  Undo the parts that describe a GNU/Linux userland.  */
@@ -103,6 +105,12 @@ extern int dot_symbols;
 /* ELFv1 is the default and the tested ABI; -mabi=elfv2 selects ELFv2.  */
 #define ELFv2_ABI_CHECK (rs6000_elf_abi == 2)
 
+/* -m32 returns structures in memory (-maix-struct-return), as the
+   powerpc64 Linux configuration does for its 32-bit multilib.  libxenon
+   and the existing -m32 Xenon libraries were built that way.  */
+#undef  DRAFT_V4_STRUCT_RET
+#define DRAFT_V4_STRUCT_RET (!TARGET_64BIT)
+
 /* The 64-bit option checks are shared with linux64.h and freebsd64.h.
    They default to -mcmodel=medium; this target defaults to
    -mcmodel=small (TOC-indirect addressing, 16-bit TOC offsets; GNU ld
@@ -126,7 +134,7 @@ extern int dot_symbols;
     }									\
   while (0)
 
-/* Assembler: -a64 by default, -a32 for a future -m32 multilib.  */
+/* Assembler: -a64 by default, -a32 for the -m32 multilib.  */
 #undef	ASM_SPEC
 #define	ASM_SPEC "%{m32:%(asm_spec32)}%{!m32:%(asm_spec64)} %(asm_spec_common)"
 
@@ -140,7 +148,7 @@ extern int dot_symbols;
 %{,assembler|,assembler-with-cpp: %{mregnames} %{mno-regnames}}" \
   ENDIAN_SELECT(" -mbig", " -mlittle", " -mbig")
 
-/* Linker: pick the emulation explicitly so -m32 links work later.  */
+/* Linker: pick the emulation explicitly (elf32ppc for -m32).  */
 #define LINK_OS_SPEC32 "-m elf32ppc"
 #define LINK_OS_SPEC64 "-m elf64ppc"
 
@@ -266,6 +274,18 @@ extern int dot_symbols;
 #define WCHAR_TYPE (TARGET_64BIT ? "int" : "long int")
 #undef  WCHAR_TYPE_SIZE
 #define WCHAR_TYPE_SIZE 32
+
+/* <stdint.h> types for -m32: int32_t is int (not newlib's default of
+   long when long is 32 bits) and int_fast8_t is signed char, as in the
+   existing -m32 Xenon libraries (libxenon), so C++ mangling and the
+   layout of structures using them do not change.  -m64 keeps the
+   newlib-stdint.h types.  */
+#undef  STDINT_LONG32
+#define STDINT_LONG32 0
+#undef  INT_FAST8_TYPE
+#define INT_FAST8_TYPE (TARGET_64BIT ? "int" : "signed char")
+#undef  UINT_FAST8_TYPE
+#define UINT_FAST8_TYPE (TARGET_64BIT ? "unsigned int" : "unsigned char")
 
 /* Function profiling bits.  */
 #undef  RS6000_MCOUNT

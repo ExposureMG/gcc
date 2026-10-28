@@ -39,7 +39,7 @@
    sharing the caller's TOC in a static link, so there is no global
    entry point.
 
-   32-bit (SysV ABI, for a later -m32 multilib): a 16-byte frame, LR
+   32-bit (SysV ABI, the -m32 multilib): a 16-byte frame, LR
    saved at 4 bytes above the incoming stack pointer.  */
 
 	.ident	"GNU C xenon-crti.S"
@@ -112,3 +112,7 @@ _fini:
 	mflr	0
 	stw	0,20(1)
 #endif
+
+/* No executable stack (ld defaults to one for ELF32 objects without
+   this note).  */
+	.section .note.GNU-stack,"",@progbits

@@ -24,7 +24,7 @@
 # __libc_fini_array call.  The eabi-ci.S/sol-ci.S variants used by the
 # 32-bit ELF targets are empty for __powerpc64__, so this target has its
 # own, handling both the 64-bit ELFv1 ABI (descriptors in .opd) and the
-# 32-bit SysV ABI for a later -m32 multilib.
+# 32-bit SysV ABI of the -m32 multilib.
 CUSTOM_CRTIN = yes
 
 crti$(objext): $(srcdir)/config/rs6000/xenon-crti.S
