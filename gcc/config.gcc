@@ -555,7 +555,7 @@ powerpc*-*-*)
 	extra_headers="${extra_headers} ppu_intrinsics.h spu2vmx.h vec_types.h si2vmx.h"
 	extra_headers="${extra_headers} amo.h"
 	case x$with_cpu in
-	    xpowerpc64|xdefault64|x6[23]0|x970|xG5|xpower[3456789]|xpower1[01]|xfuture|xpower6x|xrs64a|xcell|xa2|xe500mc64|xe5500|xe6500)
+	    xpowerpc64|xdefault64|x6[23]0|x970|xG5|xpower[3456789]|xpower1[01]|xfuture|xpower6x|xrs64a|xcell|xxenon|xa2|xe500mc64|xe5500|xe6500)
 		cpu_is_64bit=yes
 		;;
 	esac
@@ -3210,10 +3210,31 @@ powerpc*-*-linux*)
 		extra_options="${extra_options} rs6000/476.opt" ;;
 	    powerpc*-*-linux*altivec*)
 		tm_file="${tm_file} rs6000/linuxaltivec.h" ;;
+	    powerpc64-xenon-linux*)
+		# The Xbox 360 (Xenon) running Linux: -mcpu=xenon by default
+		# (see with_cpu below) and the VMX128 intrinsics.  The ABI is
+		# the Linux one; v32-v127 are all volatile here, since the
+		# unwinder has no columns for them (VMX128_HI_SAVED_P).
+		# 64-bit only, libraries in lib/ (t-xenon-linux).
+		extra_headers="${extra_headers} xenon_vmx.h"
+		tmake_file="${tmake_file} rs6000/t-xenon-linux" ;;
 	esac
 	case ${target} in
 	    *-linux*-musl*)
 		enable_secureplt=yes ;;
+	esac
+	case ${target} in
+	    powerpc64-xenon-linux*-musl*)
+		# musl's powerpc64 port supports the ELFv2 ABI only.
+		case ${with_abi} in
+		    "") with_abi=elfv2 ;;
+		    elfv2) ;;
+		    *)
+			echo "--with-abi=${with_abi} is not supported for ${target}: musl needs elfv2" 1>&2
+			exit 1
+			;;
+		esac
+		;;
 	esac
 	if test x${enable_secureplt} = xyes; then
 		tm_file="rs6000/secureplt.h ${tm_file}"
@@ -4231,8 +4252,8 @@ if test x$with_cpu = x ; then
     visium-*-*)
       with_cpu=gr5
       ;;
-    powerpc64-xenon-elf*)
-      # The Xbox 360 target defaults to its own CPU.
+    powerpc64-xenon-elf* | powerpc64-xenon-linux*)
+      # The Xbox 360 targets default to their own CPU.
       with_cpu=xenon
       ;;
     powerpc64-*-elf*)

@@ -4590,6 +4590,39 @@ offset_below_red_zone_p (HOST_WIDE_INT offset)
 		   : TARGET_32BIT ? -220 : -288);
 }
 
+/* Restore the call-saved CR fields of an ELFv2 function that calls
+   __builtin_eh_return from their separate slots at INFO->ehcr_offset,
+   addressed through FRAME_REG_RTX + FRAME_OFF (rs6000_emit_epilogue).  */
+
+static void
+restore_elfv2_eh_cr_fields (rs6000_stack_t *info, rtx frame_reg_rtx,
+			    int frame_off, int reg_size, bool exit_func)
+{
+  int i, cr_off = info->ehcr_offset;
+
+  for (i = 0; i < 8; i++)
+    if (!call_used_or_fixed_reg_p (CR0_REGNO + i))
+      {
+	rtx reg = gen_rtx_REG (SImode, 0);
+	emit_insn (gen_frame_load (reg, frame_reg_rtx,
+				   cr_off + frame_off));
+
+	rtx_insn *insn = emit_insn (gen_movsi_to_cr_one
+				      (gen_rtx_REG (CCmode, CR0_REGNO + i),
+				       reg));
+
+	if (!exit_func && flag_shrink_wrap)
+	  {
+	    add_reg_note (insn, REG_CFA_RESTORE,
+			  gen_rtx_REG (SImode, CR0_REGNO + i));
+
+	    RTX_FRAME_RELATED_P (insn) = 1;
+	  }
+
+	cr_off += reg_size;
+      }
+}
+
 /* Append CFA_RESTORES to any existing REG_NOTES on the last insn.  */
 
 static void
@@ -4981,28 +5014,65 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
   /* With a frame pointer or a back chain restore, the stack is popped
      below before the exception handler data registers are loaded from
      their slots, which are below the red zone when the frame has a Xenon
-     VMX128 area (always 1 KiB in a function calling __builtin_eh_return).
-     Load them now, while the stack still covers them.  Nothing after
-     this point changes r3-r6.  Only for frames with a VMX128 area, so
-     that the code for every other CPU is unchanged (upstream has the same
-     latent problem at -O0 for slots at -512 and below).  */
+     VMX128 area (always 1 KiB in a function calling __builtin_eh_return),
+     and in any big enough frame.  Load them now, while the stack still
+     covers them.  Nothing after this point changes r3-r6.  Only for
+     -mcpu=xenon (and frames with a VMX128 area), so that the code for
+     every other CPU is unchanged (upstream has the same latent problem at
+     -O0 for slots at -512 and below).  On Linux, where v64-v127 are never
+     saved (VMX128_HI_SAVED_P), a signal handler's frame may overwrite
+     the stack below the red zone at any time.  */
+  bool xenon_frame = info->vmx128_size != 0 || rs6000_cpu == PROCESSOR_XENON;
+  /* The register to load them through: FRAME_REG_RTX once a restore
+     above has set it up, else the frame pointer, which (as the stack
+     pointer at the end of the prologue) has the same FRAME_OFF to the top
+     of the frame.  A back chain restore with FRAME_REG_RTX still the
+     stack pointer keeps r1 until the final stack reset, so nothing is
+     loaded from below it there.  */
+  rtx early_reg = (frame_reg_rtx != sp_reg_rtx ? frame_reg_rtx
+		   : frame_pointer_needed_indeed ? hard_frame_pointer_rtx
+		   : NULL_RTX);
   bool eh_data_loaded = false;
   if (epilogue_type == EPILOGUE_TYPE_EH_RETURN
-      && info->vmx128_size != 0
+      && xenon_frame
       && DEFAULT_ABI != ABI_V4
-      && frame_reg_rtx != sp_reg_rtx
+      && early_reg != NULL_RTX
       && (use_backchain_to_restore_sp || frame_pointer_needed_indeed)
       && offset_below_red_zone_p (info->ehrd_offset))
     {
       for (i = 0; EH_RETURN_DATA_REGNO (i) != INVALID_REGNUM; ++i)
 	{
 	  unsigned int regno = EH_RETURN_DATA_REGNO (i);
-	  rtx mem = gen_frame_mem_offset (reg_mode, frame_reg_rtx,
+	  rtx mem = gen_frame_mem_offset (reg_mode, early_reg,
 					  info->ehrd_offset + frame_off
 					  + reg_size * (int) i);
 	  emit_move_insn (gen_rtx_REG (reg_mode, regno), mem);
 	}
       eh_data_loaded = true;
+    }
+
+  /* If we exit by an out-of-line restore function on ABI_V4 then that
+     function will deallocate the stack, so we don't need to worry
+     about the unwinder restoring cr from an invalid stack frame
+     location.  */
+  bool exit_func = (!restoring_FPRs_inline
+		    || (!restoring_GPRs_inline
+			&& info->first_fp_reg_save == 64));
+
+  /* Likewise the separate CR field slots of an ELFv2 function calling
+     __builtin_eh_return (below the EH data slots), which are otherwise
+     restored after the pop.  */
+  bool ehcr_restored = false;
+  if (DEFAULT_ABI == ABI_ELFv2
+      && crtl->calls_eh_return
+      && xenon_frame
+      && early_reg != NULL_RTX
+      && (use_backchain_to_restore_sp || frame_pointer_needed_indeed)
+      && offset_below_red_zone_p (info->ehcr_offset))
+    {
+      restore_elfv2_eh_cr_fields (info, early_reg, frame_off,
+				  reg_size, exit_func);
+      ehcr_restored = true;
     }
 
   insn = NULL_RTX;
@@ -5231,44 +5301,14 @@ rs6000_emit_epilogue (enum epilogue_type epilogue_type)
       emit_insn (generate_set_vrsave (reg, info, 1));
     }
 
-  /* If we exit by an out-of-line restore function on ABI_V4 then that
-     function will deallocate the stack, so we don't need to worry
-     about the unwinder restoring cr from an invalid stack frame
-     location.  */
-  bool exit_func = (!restoring_FPRs_inline
-		    || (!restoring_GPRs_inline
-			&& info->first_fp_reg_save == 64));
-
   /* In the ELFv2 ABI we need to restore all call-saved CR fields from
      *separate* slots if the routine calls __builtin_eh_return, so
      that they can be independently restored by the unwinder.  Since
      it is for CR fields restoring, it should be done for any epilogue
      types (not EPILOGUE_TYPE_EH_RETURN specific).  */
-  if (DEFAULT_ABI == ABI_ELFv2 && crtl->calls_eh_return)
-    {
-      int i, cr_off = info->ehcr_offset;
-
-      for (i = 0; i < 8; i++)
-	if (!call_used_or_fixed_reg_p (CR0_REGNO + i))
-	  {
-	    rtx reg = gen_rtx_REG (SImode, 0);
-	    emit_insn (gen_frame_load (reg, frame_reg_rtx,
-				       cr_off + frame_off));
-
-	    insn = emit_insn (gen_movsi_to_cr_one
-				(gen_rtx_REG (CCmode, CR0_REGNO + i), reg));
-
-	    if (!exit_func && flag_shrink_wrap)
-	      {
-		add_reg_note (insn, REG_CFA_RESTORE,
-			      gen_rtx_REG (SImode, CR0_REGNO + i));
-
-		RTX_FRAME_RELATED_P (insn) = 1;
-	      }
-
-	    cr_off += reg_size;
-	  }
-    }
+  if (DEFAULT_ABI == ABI_ELFv2 && crtl->calls_eh_return && !ehcr_restored)
+    restore_elfv2_eh_cr_fields (info, frame_reg_rtx, frame_off, reg_size,
+				exit_func);
 
   /* Get the old lr if we saved it.  If we are restoring registers
      out-of-line, then the out-of-line routines can do this for us.  */

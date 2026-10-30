@@ -11615,6 +11615,23 @@ rs6000_conditional_register_usage (void)
 	    call_used_regs[i] = 1;
 	  }
       vmx128_call_saved_diagnosed = true;
+      /* Without the unwinder columns for v64-v127 (VMX128_HI_SAVED_P,
+	 e.g. on Linux) they are volatile by default; a -fcall-saved-vN
+	 for one of them would be saved by the prologue but not restored
+	 when an exception unwinds through the frame.  Reject it.  */
+      static bool vmx128_hi_call_saved_diagnosed = false;
+      if (!VMX128_HI_SAVED_P)
+	for (i = FIRST_SAVED_VMX128_REGNO; i <= LAST_VMX128_HI_REGNO; ++i)
+	  if (!fixed_regs[i] && !call_used_regs[i])
+	    {
+	      if (!vmx128_hi_call_saved_diagnosed)
+		error_at (UNKNOWN_LOCATION,
+			  "%<-fcall-saved-v%d%> is not supported on this "
+			  "target: its unwinder cannot restore v64-v127",
+			  VMX128_REGNUM (i));
+	      call_used_regs[i] = 1;
+	    }
+      vmx128_hi_call_saved_diagnosed = true;
       /* v64-v127 are callee-saved only in the AltiVec ABI, where the
 	 prologue saves them like v20-v31 (rs6000-logue.cc); with
 	 -mabi=no-altivec nothing saves vector registers, so make them

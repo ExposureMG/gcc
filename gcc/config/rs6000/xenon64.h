@@ -27,8 +27,9 @@
    is derived from rs6000/freebsd64.h with the operating-system parts
    removed.  The ABI is the 64-bit ELF ABI version 1 (ELFv1): function
    descriptors in .opd, the TOC pointer in r2, LP64, big-endian.  There is
-   no dynamic linker and no shared library support; executables are linked
-   statically.  The C library is newlib; the board support library
+   no dynamic linker; executables are linked statically.  -shared builds
+   self-contained shared objects such as the Linux vDSO (normally with
+   -nostdlib).  The C library is newlib; the board support library
    (libxenon) supplies crt0.o and the system calls.
 
    -m64 is the default.  -m32 is a multilib (libxenon is built -m32
@@ -164,11 +165,14 @@ extern int dot_symbols;
 #define LINK_OS_DEFAULT_SPEC \
   "%{m32:%(link_os_spec32)}%{!m32:%(link_os_spec64)}"
 
-/* Static linking only: no shared libraries, no dynamic linker.  */
+/* Static linking by default; there is no dynamic linker.  -shared (or
+   -symbolic) makes an ET_DYN object for whoever maps it: the Linux kernel
+   links its vDSO with "-nostdlib -shared".  newlib is not PIC for -m32,
+   so a -m32 shared object that pulls in libc gets text relocations.  */
 #undef  LINK_SHLIB_SPEC
 #define LINK_SHLIB_SPEC \
-  "%{shared|symbolic:%eshared libraries are not supported on this target} \
-   %{!r:-static}"
+  "%{shared:-shared} %{symbolic:-shared -Bsymbolic} \
+   %{!shared:%{!symbolic:%{!r:-static}}}"
 
 /* No default load address: the image is placed by the linker script
    (-T) of the board support package; ld's elf64ppc default script
@@ -178,12 +182,16 @@ extern int dot_symbols;
 
 /* newlib start files.  The board support library (libxenon) supplies
    crt0.o (the entry point); libgcc supplies crti.o/crtn.o (the _init and
-   _fini frames newlib's __libc_init_array calls) and crtbegin.o/crtend.o.  */
+   _fini frames newlib's __libc_init_array calls) and crtbegin.o/crtend.o.
+   A shared object has no entry point (no crt0.o) and takes the PIC
+   crtbeginS.o/crtendS.o.  */
 #undef	STARTFILE_DEFAULT_SPEC
-#define	STARTFILE_DEFAULT_SPEC "%:if-exists(crt0%O%s) crti%O%s crtbegin%O%s"
+#define	STARTFILE_DEFAULT_SPEC \
+  "%{!shared:%:if-exists(crt0%O%s)} crti%O%s \
+   %{shared:crtbeginS%O%s;:crtbegin%O%s}"
 
 #undef	ENDFILE_DEFAULT_SPEC
-#define	ENDFILE_DEFAULT_SPEC "crtend%O%s crtn%O%s"
+#define	ENDFILE_DEFAULT_SPEC "%{shared:crtendS%O%s;:crtend%O%s} crtn%O%s"
 
 #undef	LIB_DEFAULT_SPEC
 #define	LIB_DEFAULT_SPEC "-lc"

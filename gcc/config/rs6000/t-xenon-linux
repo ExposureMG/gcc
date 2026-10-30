@@ -1,0 +1,9 @@
+# powerpc64-xenon-linux*: 64-bit only (XENON_MUSL_PLAN.md D1).  Drop the
+# m64/m32 table of t-linux64, whose m64=../lib64 would put the libraries
+# beside, not with, musl's (ld-musl-powerpc64.so.1 searches /lib, then
+# /usr/local/lib and /usr/lib).  With no multilibs they go in lib/.
+
+MULTILIB_OPTIONS =
+MULTILIB_DIRNAMES =
+MULTILIB_EXTRA_OPTS =
+MULTILIB_OSDIRNAMES =

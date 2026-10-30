@@ -846,6 +846,14 @@ enum data_align { align_abi, align_opt, align_both };
   VMX128_HI_REGS_INIT_32 (LO), VMX128_HI_REGS_INIT_32 (HI), \
   VMX128_HI_REGS_INIT_32 (HI)
 
+/* True if v64-v127 are callee-saved (plan 4.3).  That needs an unwinder
+   with columns for them (.eh_frame 152-215), i.e. DWARF_FRAME_REGISTERS
+   above 215, as rs6000/xenon64.h has.  Every other target, Linux
+   (powerpc64-xenon-linux-musl) included, keeps the 119-column unwinder,
+   which could not restore them while unwinding, so there all of v32-v127
+   are volatile.  */
+#define VMX128_HI_SAVED_P (DWARF_FRAME_REGISTERS > 215)
+
 /* 1 for registers that have pervasive standard uses
    and are not available for the register allocator.
 
@@ -901,8 +909,9 @@ enum data_align { align_abi, align_opt, align_both };
    0, 0, 0,					   \
    /* DMRs */					   \
    1, 1, 1, 1, 1, 1, 1, 1,			   \
-   /* VMX128: v32-v63 volatile, v64-v127 callee-saved (plan 4.3) */ \
-   VMX128_HI_REGS_INIT (1, 0)			   \
+   /* VMX128: v32-v63 volatile, v64-v127 callee-saved (plan 4.3) \
+      where the unwinder covers them, else volatile */	   \
+   VMX128_HI_REGS_INIT (1, !VMX128_HI_SAVED_P)	   \
 }
 
 #define TOTAL_ALTIVEC_REGS	(LAST_ALTIVEC_REGNO - FIRST_ALTIVEC_REGNO + 1)
